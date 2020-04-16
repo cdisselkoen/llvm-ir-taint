@@ -317,6 +317,16 @@ impl TaintState {
                     }
                     self.update_var_taintedtype(phi.get_result().clone(), result_ty)
                 },
+                Instruction::Select(select) => {
+                    if self.is_scalar_operand_tainted(&select.condition) {
+                        self.update_var_taintedtype(select.get_result().clone(), TaintedType::TaintedValue)
+                    } else {
+                        let true_ty = self.get_type_of_operand(&select.true_value);
+                        let false_ty = self.get_type_of_operand(&select.false_value);
+                        let result_ty = true_ty.join(&false_ty);
+                        self.update_var_taintedtype(select.get_result().clone(), result_ty)
+                    }
+                },
                 _ => unimplemented!("instruction {:?}", inst),
             }
         }
