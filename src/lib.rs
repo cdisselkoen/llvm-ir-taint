@@ -195,22 +195,22 @@ impl TaintState {
                     self.update_var_taintedtype(uop.get_result().clone(), op_ty)
                 },
                 Instruction::ExtractElement(ee) => {
-                    if self.is_scalar_operand_tainted(&ee.index) {
-                        self.update_var_taintedtype(ee.get_result().clone(), TaintedType::TaintedValue)
+                    let result_ty = if self.is_scalar_operand_tainted(&ee.index) {
+                        TaintedType::TaintedValue
                     } else {
-                        let element_ty = self.get_type_of_operand(&ee.vector);  // in our type system, the type of a vector and the type of one of its elements are the same
-                        self.update_var_taintedtype(ee.get_result().clone(), element_ty)
-                    }
+                        self.get_type_of_operand(&ee.vector)  // in our type system, the type of a vector and the type of one of its elements are the same
+                    };
+                    self.update_var_taintedtype(ee.get_result().clone(), result_ty)
                 },
                 Instruction::InsertElement(ie) => {
-                    if self.is_scalar_operand_tainted(&ie.index)
+                    let result_ty = if self.is_scalar_operand_tainted(&ie.index)
                         || self.is_scalar_operand_tainted(&ie.element)
                     {
-                        self.update_var_taintedtype(ie.get_result().clone(), TaintedType::TaintedValue)
+                        TaintedType::TaintedValue
                     } else {
-                        let vector_ty = self.get_type_of_operand(&ie.vector);
-                        self.update_var_taintedtype(ie.get_result().clone(), vector_ty)  // in our type system, inserting an untainted element does't change the type of the vector
-                    }
+                        self.get_type_of_operand(&ie.vector)  // in our type system, inserting an untainted element does't change the type of the vector
+                    };
+                    self.update_var_taintedtype(ie.get_result().clone(), result_ty)
                 },
                 Instruction::ShuffleVector(sv) => {
                     // Vector operands are still scalars in our type system
@@ -230,23 +230,21 @@ impl TaintState {
                     self.update_var_taintedtype(iv.get_result().clone(), aggregate)
                 },
                 Instruction::Alloca(alloca) => {
-                    if self.is_scalar_operand_tainted(&alloca.num_elements) {
-                        self.update_var_taintedtype(alloca.get_result().clone(), TaintedType::TaintedValue)
+                    let result_ty = if self.is_scalar_operand_tainted(&alloca.num_elements) {
+                        TaintedType::TaintedValue
                     } else {
-                        self.update_var_taintedtype(alloca.get_result().clone(), TaintedType::UntaintedPointer(Box::new(TaintedType::from_llvm_type(&alloca.allocated_type))))
-                    }
+                        TaintedType::UntaintedPointer(Box::new(TaintedType::from_llvm_type(&alloca.allocated_type)))
+                    };
+                    self.update_var_taintedtype(alloca.get_result().clone(), result_ty)
                 },
                 Instruction::Load(load) => {
-                    match self.get_type_of_operand(&load.address) {
-                        TaintedType::TaintedValue => {
-                            self.update_var_taintedtype(load.get_result().clone(), TaintedType::TaintedValue)
-                        },
+                    let result_ty = match self.get_type_of_operand(&load.address) {
+                        TaintedType::TaintedValue => TaintedType::TaintedValue,
                         TaintedType::UntaintedValue => panic!("Load: address is not a pointer: {:?}", &load.address),
                         TaintedType::Struct(_) => panic!("Load: address is not a pointer: {:?}", &load.address),
-                        TaintedType::UntaintedPointer(pointee_type) => {
-                            self.update_var_taintedtype(load.get_result().clone(), *pointee_type)
-                        },
-                    }
+                        TaintedType::UntaintedPointer(pointee_type) => *pointee_type,
+                    };
+                    self.update_var_taintedtype(load.get_result().clone(), result_ty)
                 },
                 Instruction::Store(store) => {
                     match self.get_type_of_operand(&store.address) {
@@ -270,18 +268,16 @@ impl TaintState {
                 },
                 Instruction::Fence(_) => false,
                 Instruction::GetElementPtr(gep) => {
-                    match self.get_type_of_operand(&gep.address) {
-                        TaintedType::TaintedValue => {
-                            self.update_var_taintedtype(gep.get_result().clone(), TaintedType::TaintedValue)
-                        },
+                    let result_ty = match self.get_type_of_operand(&gep.address) {
+                        TaintedType::TaintedValue => TaintedType::TaintedValue,
                         TaintedType::UntaintedValue => panic!("GEP: address is not a pointer: {:?}", &gep.address),
                         TaintedType::Struct(_) => panic!("GEP: address is not a pointer: {:?}", &gep.address),
                         t@TaintedType::UntaintedPointer(_) => {
                             let eltype = extract_value_from_struct_or_array(&t, gep.indices.iter()).clone();
-                            let elptr = TaintedType::UntaintedPointer(Box::new(eltype));
-                            self.update_var_taintedtype(gep.get_result().clone(), elptr)
-                        }
-                    }
+                            TaintedType::UntaintedPointer(Box::new(eltype))
+                        },
+                    };
+                    self.update_var_taintedtype(gep.get_result().clone(), result_ty)
                 },
                 Instruction::PtrToInt(pti) => {
                     match self.get_type_of_operand(&pti.operand) {
@@ -318,14 +314,14 @@ impl TaintState {
                     self.update_var_taintedtype(phi.get_result().clone(), result_ty)
                 },
                 Instruction::Select(select) => {
-                    if self.is_scalar_operand_tainted(&select.condition) {
-                        self.update_var_taintedtype(select.get_result().clone(), TaintedType::TaintedValue)
+                    let result_ty = if self.is_scalar_operand_tainted(&select.condition) {
+                        TaintedType::TaintedValue
                     } else {
                         let true_ty = self.get_type_of_operand(&select.true_value);
                         let false_ty = self.get_type_of_operand(&select.false_value);
-                        let result_ty = true_ty.join(&false_ty);
-                        self.update_var_taintedtype(select.get_result().clone(), result_ty)
-                    }
+                        true_ty.join(&false_ty)
+                    };
+                    self.update_var_taintedtype(select.get_result().clone(), result_ty)
                 },
                 _ => unimplemented!("instruction {:?}", inst),
             }
