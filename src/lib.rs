@@ -83,6 +83,22 @@ impl TaintedType {
             _ => unimplemented!("TaintedType::from_constant on {:?}", constant),
         }
     }
+
+    fn join(&self, other: &Self) -> Self {
+        use TaintedType::*;
+        match (self, other) {
+            (UntaintedValue, UntaintedValue) => UntaintedValue,
+            (UntaintedValue, TaintedValue) => TaintedValue,
+            (TaintedValue, UntaintedValue) => TaintedValue,
+            (TaintedValue, TaintedValue) => TaintedValue,
+            (UntaintedPointer(pointee1), UntaintedPointer(pointee2)) => UntaintedPointer(Box::new(pointee1.join(&*pointee2))),
+            (Struct(elements1), Struct(elements2)) => {
+                assert_eq!(elements1.len(), elements2.len());
+                Struct(elements1.iter().zip(elements2.iter()).map(|(el1, el2)| el1.join(el2)).collect())
+            },
+            _ => panic!("join: type mismatch: {:?} vs. {:?}", self, other),
+        }
+    }
 }
 
 struct TaintState {
@@ -123,16 +139,21 @@ impl TaintState {
         }
     }
 
-    /// Update the given variable to the given `TaintedType`, returning `true` if
-    /// this is a change (the variable was previously a different `TaintedType`,
-    /// or we previously didn't have data on it)
+    /// Update the given variable with the given `TaintedType`.
+    /// This perfoms a `join` of the given `TaintedType` and the previous
+    /// `TaintedType` assigned to the variable (if any).
+    ///
+    /// Returns `true` if the variable's `TaintedType` changed (the variable was
+    /// previously a different `TaintedType`, or we previously didn't have data
+    /// on it)
     fn update_var_taintedtype(&mut self, name: Name, taintedtype: TaintedType) -> bool {
         match self.map.entry(name) {
             Entry::Occupied(mut oentry) => {
-                if oentry.get() == &taintedtype {
+                let joined = oentry.get().join(&taintedtype);
+                if oentry.get() == &joined {
                     false
                 } else {
-                    oentry.insert(taintedtype);
+                    oentry.insert(joined);
                     true
                 }
             },
@@ -149,13 +170,10 @@ impl TaintState {
     fn process_instruction(&mut self, inst: &Instruction) -> bool {
         if inst.is_binary_op() {
             let bop: groups::BinaryOp = inst.clone().try_into().unwrap();
-            let should_taint_output = self.is_scalar_operand_tainted(bop.get_operand0())
-                || self.is_scalar_operand_tainted(bop.get_operand1());
-            if should_taint_output {
-                self.update_var_taintedtype(bop.get_result().clone(), TaintedType::TaintedValue)
-            } else {
-                self.update_var_taintedtype(bop.get_result().clone(), TaintedType::UntaintedValue)
-            }
+            let op0_ty = self.get_type_of_operand(bop.get_operand0());
+            let op1_ty = self.get_type_of_operand(bop.get_operand1());
+            let result_ty = op0_ty.join(&op1_ty);
+            self.update_var_taintedtype(bop.get_result().clone(), result_ty)
         } else {
             match inst {
                 // the unary ops which have scalar input and scalar output
@@ -173,26 +191,15 @@ impl TaintState {
                 | Instruction::ZExt(_)
                 => {
                     let uop: groups::UnaryOp = inst.clone().try_into().unwrap();
-                    if self.is_scalar_operand_tainted(uop.get_operand()) {
-                        self.update_var_taintedtype(uop.get_result().clone(), TaintedType::TaintedValue)
-                    } else {
-                        self.update_var_taintedtype(uop.get_result().clone(), TaintedType::UntaintedValue)
-                    }
+                    let op_ty = self.get_type_of_operand(uop.get_operand());
+                    self.update_var_taintedtype(uop.get_result().clone(), op_ty)
                 },
                 Instruction::ExtractElement(ee) => {
                     if self.is_scalar_operand_tainted(&ee.index) {
                         self.update_var_taintedtype(ee.get_result().clone(), TaintedType::TaintedValue)
                     } else {
-                        match self.get_type_of_operand(&ee.vector) {
-                            TaintedType::TaintedValue => {
-                                self.update_var_taintedtype(ee.get_result().clone(), TaintedType::TaintedValue)
-                            },
-                            TaintedType::UntaintedValue => {
-                                self.update_var_taintedtype(ee.get_result().clone(), TaintedType::UntaintedValue)
-                            },
-                            TaintedType::UntaintedPointer(_) => panic!("ExtractElement: didn't expect vector operand to have pointer type"),
-                            TaintedType::Struct(_) => panic!("ExtractElement: didn't expect vector operand to have struct type"),
-                        }
+                        let element_ty = self.get_type_of_operand(&ee.vector);  // in our type system, the type of a vector and the type of one of its elements are the same
+                        self.update_var_taintedtype(ee.get_result().clone(), element_ty)
                     }
                 },
                 Instruction::InsertElement(ie) => {
@@ -201,27 +208,16 @@ impl TaintState {
                     {
                         self.update_var_taintedtype(ie.get_result().clone(), TaintedType::TaintedValue)
                     } else {
-                        match self.get_type_of_operand(&ie.vector) {
-                            TaintedType::TaintedValue => {
-                                self.update_var_taintedtype(ie.get_result().clone(), TaintedType::TaintedValue)
-                            },
-                            TaintedType::UntaintedValue => {
-                                self.update_var_taintedtype(ie.get_result().clone(), TaintedType::UntaintedValue)
-                            },
-                            TaintedType::UntaintedPointer(_) => panic!("InsertElement: didn't expect vector operand to have pointer type"),
-                            TaintedType::Struct(_) => panic!("InsertElement: didn't expect vector operand to have struct type"),
-                        }
+                        let vector_ty = self.get_type_of_operand(&ie.vector);
+                        self.update_var_taintedtype(ie.get_result().clone(), vector_ty)  // in our type system, inserting an untainted element does't change the type of the vector
                     }
                 },
                 Instruction::ShuffleVector(sv) => {
                     // Vector operands are still scalars in our type system
-                    let should_taint_output = self.is_scalar_operand_tainted(&sv.operand0)
-                        || self.is_scalar_operand_tainted(&sv.operand1);
-                    if should_taint_output {
-                        self.update_var_taintedtype(sv.get_result().clone(), TaintedType::TaintedValue)
-                    } else {
-                        self.update_var_taintedtype(sv.get_result().clone(), TaintedType::UntaintedValue)
-                    }
+                    let op0_ty = self.get_type_of_operand(&sv.operand0);
+                    let op1_ty = self.get_type_of_operand(&sv.operand1);
+                    let result_ty = op0_ty.join(&op1_ty);
+                    self.update_var_taintedtype(sv.get_result().clone(), result_ty)
                 },
                 Instruction::ExtractValue(ev) => {
                     let aggregate = self.get_type_of_operand(&ev.aggregate);
@@ -302,22 +298,16 @@ impl TaintState {
                     }
                 },
                 Instruction::ICmp(icmp) => {
-                    let should_taint_output = self.is_scalar_operand_tainted(&icmp.operand0)
-                        || self.is_scalar_operand_tainted(&icmp.operand1);
-                    if should_taint_output {
-                        self.update_var_taintedtype(icmp.get_result().clone(), TaintedType::TaintedValue)
-                    } else {
-                        self.update_var_taintedtype(icmp.get_result().clone(), TaintedType::UntaintedValue)
-                    }
+                    let op0_ty = self.get_type_of_operand(&icmp.operand0);
+                    let op1_ty = self.get_type_of_operand(&icmp.operand1);
+                    let result_ty = op0_ty.join(&op1_ty);
+                    self.update_var_taintedtype(icmp.get_result().clone(), result_ty)
                 },
                 Instruction::FCmp(fcmp) => {
-                    let should_taint_output = self.is_scalar_operand_tainted(&fcmp.operand0)
-                        || self.is_scalar_operand_tainted(&fcmp.operand1);
-                    if should_taint_output {
-                        self.update_var_taintedtype(fcmp.get_result().clone(), TaintedType::TaintedValue)
-                    } else {
-                        self.update_var_taintedtype(fcmp.get_result().clone(), TaintedType::UntaintedValue)
-                    }
+                    let op0_ty = self.get_type_of_operand(&fcmp.operand0);
+                    let op1_ty = self.get_type_of_operand(&fcmp.operand1);
+                    let result_ty = op0_ty.join(&op1_ty);
+                    self.update_var_taintedtype(fcmp.get_result().clone(), result_ty)
                 },
                 _ => unimplemented!("instruction {:?}", inst),
             }
