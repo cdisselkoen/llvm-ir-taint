@@ -309,6 +309,14 @@ impl TaintState {
                     let result_ty = op0_ty.join(&op1_ty);
                     self.update_var_taintedtype(fcmp.get_result().clone(), result_ty)
                 },
+                Instruction::Phi(phi) => {
+                    let mut incoming_types = phi.incoming_values.iter().map(|(op, _)| self.get_type_of_operand(op));
+                    let mut result_ty = incoming_types.next().expect("Phi with no incoming values");
+                    for ty in incoming_types {
+                        result_ty = result_ty.join(&ty);
+                    }
+                    self.update_var_taintedtype(phi.get_result().clone(), result_ty)
+                },
                 _ => unimplemented!("instruction {:?}", inst),
             }
         }
