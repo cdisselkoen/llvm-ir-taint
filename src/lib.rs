@@ -1,3 +1,4 @@
+use either::Either;
 use llvm_ir::*;
 use llvm_ir::instruction::{groups, BinaryOp, HasResult, UnaryOp};
 use std::collections::HashMap;
@@ -322,6 +323,31 @@ impl TaintState {
                         true_ty.join(&false_ty)
                     };
                     self.update_var_taintedtype(select.get_result().clone(), result_ty)
+                },
+                Instruction::Call(call) => {
+                    match &call.function {
+                        Either::Right(Operand::ConstantOperand(Constant::GlobalReference { name: Name::Name(name), .. })) => {
+                            if name.starts_with("llvm.lifetime")
+                            || name.starts_with("llvm.invariant")
+                            || name.starts_with("llvm.launder.invariant")
+                            || name.starts_with("llvm.strip.invariant")
+                            || name.starts_with("llvm.dbg")
+                            {
+                                false  // these are all safe to ignore
+                            } else {
+                                unimplemented!("Call of a function named {}", name)
+                            }
+                        },
+                        Either::Right(Operand::ConstantOperand(Constant::GlobalReference { name, .. })) => {
+                            unimplemented!("Call of a function with a numbered name: {:?}", name)
+                        },
+                        Either::Right(_) => {
+                            unimplemented!("Call of a function pointer")
+                        },
+                        Either::Left(_) => {
+                            unimplemented!("inline assembly")
+                        },
+                    }
                 },
                 _ => unimplemented!("instruction {:?}", inst),
             }
