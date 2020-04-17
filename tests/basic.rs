@@ -202,3 +202,69 @@ fn alloca() {
     assert_eq!(taintmap.get(&Name::from(5)), Some(&TaintedType::TaintedValue));  // load tainted value from the alloca'd space
     assert_eq!(taintmap.get(&Name::from(2)), Some(&TaintedType::UntaintedPointer(Box::new(TaintedType::TaintedValue))));  // also, the alloca pointer should have type pointer-to-tainted
 }
+
+#[test]
+fn overwrite() {
+    let funcname = "overwrite";
+    let module = get_memory_module();
+    let func = module.get_func_by_name(funcname).unwrap_or_else(|| panic!("Failed to find function named {:?}", funcname));
+
+    // with both arguments untainted
+    let taintmap = get_taint_map_for_function(
+        func,
+        vec![TaintedType::UntaintedPointer(Box::new(TaintedType::UntaintedValue)), TaintedType::UntaintedValue],
+    );
+    assert_eq!(taintmap.get(&Name::from(4)), Some(&TaintedType::UntaintedValue));
+
+    // with the second argument tainted
+    let taintmap = get_taint_map_for_function(
+        func,
+        vec![TaintedType::UntaintedPointer(Box::new(TaintedType::UntaintedValue)), TaintedType::TaintedValue],
+    );
+    assert_eq!(taintmap.get(&Name::from(4)), Some(&TaintedType::TaintedValue));
+}
+
+#[test]
+fn load_and_store_mult() {
+    let funcname = "load_and_store_mult";
+    let module = get_memory_module();
+    let func = module.get_func_by_name(funcname).unwrap_or_else(|| panic!("Failed to find function named {:?}", funcname));
+
+    // with both arguments untainted
+    let taintmap = get_taint_map_for_function(
+        func,
+        vec![TaintedType::UntaintedPointer(Box::new(TaintedType::UntaintedValue)), TaintedType::UntaintedValue],
+    );
+    assert_eq!(taintmap.get(&Name::from(7)), Some(&TaintedType::UntaintedValue));
+
+    // with the second argument tainted
+    let taintmap = get_taint_map_for_function(
+        func,
+        vec![TaintedType::UntaintedPointer(Box::new(TaintedType::UntaintedValue)), TaintedType::TaintedValue],
+    );
+    assert_eq!(taintmap.get(&Name::from(7)), Some(&TaintedType::TaintedValue));
+}
+
+// TODO: this test is not that meaningful.
+// Would be better if %3 and %5 could have different tainted status (e.g. derived from different args)
+// so that we could test that the store to %0 doesn't affect the load from %4
+#[test]
+fn array() {
+    let funcname = "load_and_store_mult";
+    let module = get_memory_module();
+    let func = module.get_func_by_name(funcname).unwrap_or_else(|| panic!("Failed to find function named {:?}", funcname));
+
+    // with both arguments untainted
+    let taintmap = get_taint_map_for_function(
+        func,
+        vec![TaintedType::UntaintedPointer(Box::new(TaintedType::UntaintedValue)), TaintedType::UntaintedValue],
+    );
+    assert_eq!(taintmap.get(&Name::from(6)), Some(&TaintedType::UntaintedValue));
+
+    // with the second argument tainted
+    let taintmap = get_taint_map_for_function(
+        func,
+        vec![TaintedType::UntaintedPointer(Box::new(TaintedType::UntaintedValue)), TaintedType::TaintedValue],
+    );
+    assert_eq!(taintmap.get(&Name::from(6)), Some(&TaintedType::TaintedValue));
+}
