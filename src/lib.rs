@@ -266,7 +266,7 @@ impl TaintState {
                 },
                 Instruction::Store(store) => {
                     match self.get_type_of_operand(&store.address) {
-                        TaintedType::TaintedValue => unimplemented!("store with tainted address; address is {:?}", &store.address),
+                        TaintedType::TaintedValue => false,  // Storing to a tainted address: we don't need to change the taint status of anything
                         TaintedType::UntaintedValue => panic!("Store: address is not a pointer: {:?}", &store.address),
                         TaintedType::Struct(_) => panic!("Store: address is not a pointer: {:?}", &store.address),
                         TaintedType::UntaintedPointer(_) => {
