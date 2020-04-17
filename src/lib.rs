@@ -11,9 +11,18 @@ use std::fmt::Debug;
 ///
 /// `args`: the `TaintedType` to assign to each function argument. This should be
 /// a vector of the same length as `f.parameters`.
-pub fn get_taint_map_for_function(f: &Function, args: Vec<TaintedType>) -> HashMap<Name, TaintedType> {
+///
+/// `nonargs`: (optional) Initial `TaintedType`s for any nonargument variables in
+/// the function. For instance, you can use this to set some variable in the
+/// middle of the function to tainted. If this map is empty, all `TaintedType`s
+/// will simply be inferred normally from the argument `TaintedType`s.
+pub fn get_taint_map_for_function(f: &Function, args: Vec<TaintedType>, nonargs: HashMap<Name, TaintedType>) -> HashMap<Name, TaintedType> {
     assert_eq!(args.len(), f.parameters.len());
-    let mut taintstate = TaintState::from_taint_map(f.parameters.iter().map(|p| p.name.clone()).zip(args.into_iter()).collect());
+    let mut initial_taintmap = nonargs;
+    for (name, ty) in f.parameters.iter().map(|p| p.name.clone()).zip(args.into_iter()) {
+        initial_taintmap.insert(name, ty);
+    }
+    let mut taintstate = TaintState::from_taint_map(initial_taintmap);
     let mut changed = true;
     // We use a simple fixpoint algorithm where we simply do a pass over all
     // instructions in the function, and if anything changed, do another pass,
