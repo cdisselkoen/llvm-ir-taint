@@ -127,14 +127,22 @@ impl TaintState {
         self.map
     }
 
-    /// Get the `TaintedType` of the given `Operand`, according to the current state
+    /// Get the `TaintedType` of the given `Operand`, according to the current state.
+    /// Panics if the `Operand` refers to a variable which has not been defined.
     fn get_type_of_operand(&self, op: &Operand) -> TaintedType {
+        self.get_type_of_operand_fallible(op)
+            .unwrap_or_else(|name| panic!("get_type_of_operand: operand has not been typed yet: {:?}", name))
+    }
+
+    /// Same as `get_type_of_operand()`, but if it refers to a variable which has not
+    /// been defined, returns an `Err` with the name of the undefined variable
+    fn get_type_of_operand_fallible<'o>(&self, op: &'o Operand) -> Result<TaintedType, &'o Name> {
         match op {
             Operand::LocalOperand { name, .. } => {
-                self.map.get(name).unwrap_or_else(|| panic!("get_type_of_operand: operand has not been typed yet: {:?}", name)).clone()
+                self.map.get(name).cloned().ok_or(name)
             },
-            Operand::ConstantOperand(constant) => TaintedType::from_constant(constant),
-            Operand::MetadataOperand => TaintedType::UntaintedValue,
+            Operand::ConstantOperand(constant) => Ok(TaintedType::from_constant(constant)),
+            Operand::MetadataOperand => Ok(TaintedType::UntaintedValue),
         }
     }
 
@@ -316,7 +324,9 @@ impl TaintState {
                     self.update_var_taintedtype(fcmp.get_result().clone(), result_ty)
                 },
                 Instruction::Phi(phi) => {
-                    let mut incoming_types = phi.incoming_values.iter().map(|(op, _)| self.get_type_of_operand(op));
+                    let mut incoming_types = phi.incoming_values.iter()
+                        .map(|(op, _)| self.get_type_of_operand_fallible(op))
+                        .map(|ty| ty.unwrap_or(TaintedType::from_llvm_type(&phi.to_type)));  // In the case that one of the possible incoming values isn't defined yet, we'll just assume an appropriate untainted value, and continue. If it's actually tainted, that will be corrected on a future pass. (And we'll definitely have a future pass, because that variable becoming defined counts as a change for the fixpoint algorithm.)
                     let mut result_ty = incoming_types.next().expect("Phi with no incoming values");
                     for ty in incoming_types {
                         result_ty = result_ty.join(&ty);
