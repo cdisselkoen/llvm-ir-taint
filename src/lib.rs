@@ -50,16 +50,21 @@ pub enum TaintedType {
     /// An untainted value which is not a pointer or struct.
     /// This may also be a (first-class) array or vector with an untainted element type.
     UntaintedValue,
-    /// A tainted value.  May be a scalar value or pointer (to anything)
+    /// A tainted value which is not a pointer or struct.
+    /// This may also be a (first-class) array or vector with a tainted element type.
     TaintedValue,
     /// An untainted pointer to either a scalar or an array. The inner type is the
     /// pointed-to type, or the element type of the array.
     UntaintedPointer(Box<TaintedType>),
+    /// A tainted pointer to either a scalar or an array. The inner type is the
+    /// pointed-to type, or the element type of the array.
+    TaintedPointer(Box<TaintedType>),
     /// A struct, with the given element types
     Struct(Vec<TaintedType>),
 }
 
 impl TaintedType {
+    /// Produce the equivalent (untainted) `TaintedType` for a given LLVM type
     fn from_llvm_type(llvm_ty: &Type) -> Self {
         match llvm_ty {
             Type::IntegerType { .. } => TaintedType::UntaintedValue,
@@ -74,6 +79,7 @@ impl TaintedType {
         }
     }
 
+    /// Get the `TaintedType` of a `Constant`
     fn from_constant(constant: &Constant) -> Self {
         match constant {
             Constant::Int { .. } => TaintedType::UntaintedValue,
@@ -94,6 +100,17 @@ impl TaintedType {
         }
     }
 
+    /// Is this type one of the tainted types
+    pub fn is_tainted(&self) -> bool {
+        match self {
+            TaintedType::UntaintedValue => false,
+            TaintedType::TaintedValue => true,
+            TaintedType::UntaintedPointer(_) => false,
+            TaintedType::TaintedPointer(_) => true,
+            TaintedType::Struct(_) => panic!("is_tainted on a struct"),
+        }
+    }
+
     fn join(&self, other: &Self) -> Self {
         use TaintedType::*;
         match (self, other) {
@@ -102,8 +119,11 @@ impl TaintedType {
             (TaintedValue, UntaintedValue) => TaintedValue,
             (TaintedValue, TaintedValue) => TaintedValue,
             (UntaintedPointer(pointee1), UntaintedPointer(pointee2)) => UntaintedPointer(Box::new(pointee1.join(&*pointee2))),
+            (UntaintedPointer(pointee1), TaintedPointer(pointee2)) => TaintedPointer(Box::new(pointee1.join(&*pointee2))),
+            (TaintedPointer(pointee1), UntaintedPointer(pointee2)) => TaintedPointer(Box::new(pointee1.join(&*pointee2))),
+            (TaintedPointer(pointee1), TaintedPointer(pointee2)) => TaintedPointer(Box::new(pointee1.join(&*pointee2))),
             (Struct(elements1), Struct(elements2)) => {
-                assert_eq!(elements1.len(), elements2.len());
+                assert_eq!(elements1.len(), elements2.len(), "join: type mismatch: struct of {} elements with struct of {} elements", elements1.len(), elements2.len());
                 Struct(elements1.iter().zip(elements2.iter()).map(|(el1, el2)| el1.join(el2)).collect())
             },
             _ => panic!("join: type mismatch: {:?} vs. {:?}", self, other),
@@ -153,6 +173,7 @@ impl TaintState {
             TaintedType::UntaintedValue => false,
             TaintedType::TaintedValue => true,
             TaintedType::UntaintedPointer(_) => panic!("is_scalar_operand_tainted(): operand has pointer type: {:?}", op),
+            TaintedType::TaintedPointer(_) => panic!("is_scalar_operand_tainted(): operand has pointer type: {:?}", op),
             TaintedType::Struct(_) => panic!("is_scalar_operand_tainted(): operand has struct type: {:?}", op),
         }
     }
@@ -257,58 +278,69 @@ impl TaintState {
                 },
                 Instruction::Load(load) => {
                     let result_ty = match self.get_type_of_operand(&load.address) {
-                        TaintedType::TaintedValue => TaintedType::TaintedValue,
                         TaintedType::UntaintedValue => panic!("Load: address is not a pointer: {:?}", &load.address),
+                        TaintedType::TaintedValue => panic!("Load: address is not a pointer: {:?}", &load.address),
                         TaintedType::Struct(_) => panic!("Load: address is not a pointer: {:?}", &load.address),
                         TaintedType::UntaintedPointer(pointee_type) => *pointee_type,
+                        TaintedType::TaintedPointer(pointee_type) => *pointee_type,  // we allow loading untainted data through a tainted pointer, for this analysis. Caller is welcome to do post-processing to taint every result of a load from a tainted address and then rerun the tainting algorithm.
                     };
                     self.update_var_taintedtype(load.get_result().clone(), result_ty)
                 },
                 Instruction::Store(store) => {
                     match self.get_type_of_operand(&store.address) {
-                        TaintedType::TaintedValue => false,  // Storing to a tainted address: we don't need to change the taint status of anything
                         TaintedType::UntaintedValue => panic!("Store: address is not a pointer: {:?}", &store.address),
+                        TaintedType::TaintedValue => panic!("Store: address is not a pointer: {:?}", &store.address),
                         TaintedType::Struct(_) => panic!("Store: address is not a pointer: {:?}", &store.address),
-                        TaintedType::UntaintedPointer(_) => {
-                            match self.get_type_of_operand(&store.value) {
-                                // if we're storing a tainted value through a pointer-to-untainted, update the pointer type to be pointer-to-tainted
-                                TaintedType::TaintedValue => {
-                                    let address_name = match &store.address {
-                                        Operand::LocalOperand { name , .. } => name.clone(),
-                                        _ => panic!("Store: storing a tainted value to a constant address"),
-                                    };
-                                    self.update_var_taintedtype(address_name, TaintedType::UntaintedPointer(Box::new(TaintedType::TaintedValue)))
-                                },
-                                _ => false,
-                            }
+                        ptr_type@TaintedType::UntaintedPointer(_) | ptr_type@TaintedType::TaintedPointer(_) => {
+                            // update the store address's type based on the value being stored through it
+                            let value_type = self.get_type_of_operand(&store.value);
+                            let address_name = match &store.address {
+                                Operand::LocalOperand { name , .. } => name.clone(),
+                                _ => panic!("Store: storing a tainted value to a constant address"),
+                            };
+                            let new_address_type = if ptr_type.is_tainted() {
+                                TaintedType::TaintedPointer(Box::new(value_type))
+                            } else {
+                                TaintedType::UntaintedPointer(Box::new(value_type))
+                            };
+                            self.update_var_taintedtype(address_name, new_address_type)
                         },
                     }
                 },
                 Instruction::Fence(_) => false,
                 Instruction::GetElementPtr(gep) => {
                     let result_ty = match self.get_type_of_operand(&gep.address) {
-                        TaintedType::TaintedValue => TaintedType::TaintedValue,
                         TaintedType::UntaintedValue => panic!("GEP: address is not a pointer: {:?}", &gep.address),
+                        TaintedType::TaintedValue => panic!("GEP: address is not a pointer: {:?}", &gep.address),
                         TaintedType::Struct(_) => panic!("GEP: address is not a pointer: {:?}", &gep.address),
                         t@TaintedType::UntaintedPointer(_) => {
                             let eltype = extract_value_from_struct_or_array(&t, gep.indices.iter()).clone();
                             TaintedType::UntaintedPointer(Box::new(eltype))
+                        },
+                        t@TaintedType::TaintedPointer(_) => {
+                           let eltype = extract_value_from_struct_or_array(&t, gep.indices.iter()).clone();
+                           TaintedType::TaintedPointer(Box::new(eltype))
                         },
                     };
                     self.update_var_taintedtype(gep.get_result().clone(), result_ty)
                 },
                 Instruction::PtrToInt(pti) => {
                     match self.get_type_of_operand(&pti.operand) {
-                        TaintedType::TaintedValue => false,
                         TaintedType::UntaintedPointer(_) => {
                             self.update_var_taintedtype(pti.get_result().clone(), TaintedType::UntaintedValue)
                         },
+                        TaintedType::TaintedPointer(_) => {
+                            self.update_var_taintedtype(pti.get_result().clone(), TaintedType::TaintedValue)
+                        }
                         TaintedType::UntaintedValue => {
                             panic!("PtrToInt on an UntaintedValue: {:?}", &pti.operand);
                         },
+                        TaintedType::TaintedValue => {
+                            panic!("PtrToInt on an TaintedValue: {:?}", &pti.operand);
+                        },
                         TaintedType::Struct(_) => {
                             panic!("PtrToInt on a struct: {:?}", &pti.operand);
-                        }
+                        },
                     }
                 },
                 Instruction::ICmp(icmp) => {
@@ -439,6 +471,12 @@ fn extract_value_from_struct_or_array<'a, 'b, I: Index + 'b>(aggregate: &'a Tain
             TaintedType::UntaintedPointer(pointee_type) => {
                 extract_value_from_struct_or_array(pointee_type, indices)
             },
+            TaintedType::TaintedPointer(pointee_type) => {
+                // for this analysis, allowing extracting through tainted
+                // pointer, just get the element type. Consequences of the
+                // pointer being tainted is a separate issue.
+                extract_value_from_struct_or_array(pointee_type, indices)
+            }
         },
     }
 }
