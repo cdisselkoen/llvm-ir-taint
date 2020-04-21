@@ -193,10 +193,10 @@ fn load_and_store() {
     // with both arguments untainted
     let taintmap = get_taint_map_for_function(
         func,
-        vec![TaintedType::UntaintedPointer(Box::new(TaintedType::UntaintedValue)), TaintedType::UntaintedValue],
+        vec![TaintedType::untainted_ptr_to(TaintedType::UntaintedValue), TaintedType::UntaintedValue],
         HashMap::new(),
     );
-    assert_eq!(taintmap.get(&Name::from(0)), Some(&TaintedType::UntaintedPointer(Box::new(TaintedType::UntaintedValue))));
+    assert_eq!(taintmap.get(&Name::from(0)), Some(&TaintedType::untainted_ptr_to(TaintedType::UntaintedValue)));
     assert_eq!(taintmap.get(&Name::from(1)), Some(&TaintedType::UntaintedValue));
     assert_eq!(taintmap.get(&Name::from(3)), Some(&TaintedType::UntaintedValue));
     assert_eq!(taintmap.get(&Name::from(4)), Some(&TaintedType::UntaintedValue));
@@ -204,10 +204,10 @@ fn load_and_store() {
     // with value tainted: make sure that we correctly load a tainted value
     let taintmap = get_taint_map_for_function(
         func,
-        vec![TaintedType::UntaintedPointer(Box::new(TaintedType::UntaintedValue)), TaintedType::TaintedValue],
+        vec![TaintedType::untainted_ptr_to(TaintedType::UntaintedValue), TaintedType::TaintedValue],
         HashMap::new(),
     );
-    assert_eq!(taintmap.get(&Name::from(0)), Some(&TaintedType::UntaintedPointer(Box::new(TaintedType::TaintedValue))));  // %0 should have been updated to be pointer-to-tainted
+    assert_eq!(taintmap.get(&Name::from(0)), Some(&TaintedType::untainted_ptr_to(TaintedType::TaintedValue)));  // %0 should have been updated to be pointer-to-tainted
     assert_eq!(taintmap.get(&Name::from(1)), Some(&TaintedType::TaintedValue));
     assert_eq!(taintmap.get(&Name::from(3)), Some(&TaintedType::TaintedValue));
     assert_eq!(taintmap.get(&Name::from(4)), Some(&TaintedType::TaintedValue));
@@ -234,7 +234,7 @@ fn alloca() {
         HashMap::new(),
     );
     assert_eq!(taintmap.get(&Name::from(5)), Some(&TaintedType::TaintedValue));  // load tainted value from the alloca'd space
-    assert_eq!(taintmap.get(&Name::from(2)), Some(&TaintedType::UntaintedPointer(Box::new(TaintedType::TaintedValue))));  // also, the alloca pointer should have type pointer-to-tainted
+    assert_eq!(taintmap.get(&Name::from(2)), Some(&TaintedType::untainted_ptr_to(TaintedType::TaintedValue)));  // also, the alloca pointer should have type pointer-to-tainted
 }
 
 #[test]
@@ -246,7 +246,7 @@ fn overwrite() {
     // with both arguments untainted
     let taintmap = get_taint_map_for_function(
         func,
-        vec![TaintedType::UntaintedPointer(Box::new(TaintedType::UntaintedValue)), TaintedType::UntaintedValue],
+        vec![TaintedType::untainted_ptr_to(TaintedType::UntaintedValue), TaintedType::UntaintedValue],
         HashMap::new(),
     );
     assert_eq!(taintmap.get(&Name::from(4)), Some(&TaintedType::UntaintedValue));
@@ -254,7 +254,7 @@ fn overwrite() {
     // with the second argument tainted
     let taintmap = get_taint_map_for_function(
         func,
-        vec![TaintedType::UntaintedPointer(Box::new(TaintedType::UntaintedValue)), TaintedType::TaintedValue],
+        vec![TaintedType::untainted_ptr_to(TaintedType::UntaintedValue), TaintedType::TaintedValue],
         HashMap::new(),
     );
     assert_eq!(taintmap.get(&Name::from(4)), Some(&TaintedType::TaintedValue));
@@ -269,7 +269,7 @@ fn load_and_store_mult() {
     // with both arguments untainted
     let taintmap = get_taint_map_for_function(
         func,
-        vec![TaintedType::UntaintedPointer(Box::new(TaintedType::UntaintedValue)), TaintedType::UntaintedValue],
+        vec![TaintedType::untainted_ptr_to(TaintedType::UntaintedValue), TaintedType::UntaintedValue],
         HashMap::new(),
     );
     assert_eq!(taintmap.get(&Name::from(7)), Some(&TaintedType::UntaintedValue));
@@ -277,7 +277,7 @@ fn load_and_store_mult() {
     // with the second argument tainted
     let taintmap = get_taint_map_for_function(
         func,
-        vec![TaintedType::UntaintedPointer(Box::new(TaintedType::UntaintedValue)), TaintedType::TaintedValue],
+        vec![TaintedType::untainted_ptr_to(TaintedType::UntaintedValue), TaintedType::TaintedValue],
         HashMap::new(),
     );
     assert_eq!(taintmap.get(&Name::from(7)), Some(&TaintedType::TaintedValue));
@@ -292,7 +292,7 @@ fn array() {
     // with both arguments untainted
     let taintmap = get_taint_map_for_function(
         func,
-        vec![TaintedType::UntaintedPointer(Box::new(TaintedType::UntaintedValue)), TaintedType::UntaintedValue],
+        vec![TaintedType::untainted_ptr_to(TaintedType::UntaintedValue), TaintedType::UntaintedValue],
         HashMap::new(),
     );
     assert_eq!(taintmap.get(&Name::from(6)), Some(&TaintedType::UntaintedValue));
@@ -300,7 +300,7 @@ fn array() {
     // with the second argument tainted
     let taintmap = get_taint_map_for_function(
         func,
-        vec![TaintedType::UntaintedPointer(Box::new(TaintedType::UntaintedValue)), TaintedType::TaintedValue],
+        vec![TaintedType::untainted_ptr_to(TaintedType::UntaintedValue), TaintedType::TaintedValue],
         HashMap::new(),
     );
     assert_eq!(taintmap.get(&Name::from(6)), Some(&TaintedType::TaintedValue));
@@ -310,7 +310,7 @@ fn array() {
     // remain untainted.
     let taintmap = get_taint_map_for_function(
         func,
-        vec![TaintedType::UntaintedPointer(Box::new(TaintedType::UntaintedValue)), TaintedType::UntaintedValue],
+        vec![TaintedType::untainted_ptr_to(TaintedType::UntaintedValue), TaintedType::UntaintedValue],
         std::iter::once((Name::from(5), TaintedType::TaintedValue)).collect(),
     );
     assert_eq!(taintmap.get(&Name::from(6)), Some(&TaintedType::TaintedValue));

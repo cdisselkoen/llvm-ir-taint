@@ -1,10 +1,12 @@
 use either::Either;
 use llvm_ir::*;
 use llvm_ir::instruction::{groups, BinaryOp, HasResult, UnaryOp};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::convert::TryInto;
 use std::fmt::Debug;
+use std::rc::Rc;
 
 /// The main function in this module. Given an LLVM function, returns a map from
 /// variable `Name` to the `TaintedType` of that variable.
@@ -55,31 +57,58 @@ pub enum TaintedType {
     TaintedValue,
     /// An untainted pointer to either a scalar or an array. The inner type is the
     /// pointed-to type, or the element type of the array.
-    UntaintedPointer(Box<TaintedType>),
+    ///
+    /// `Rc<RefCell<>>` allows us to have multiple pointers to the same
+    /// underlying type.
+    UntaintedPointer(Rc<RefCell<TaintedType>>),
     /// A tainted pointer to either a scalar or an array. The inner type is the
     /// pointed-to type, or the element type of the array.
-    TaintedPointer(Box<TaintedType>),
+    ///
+    /// `Rc<RefCell<>>` allows us to have multiple pointers to the same
+    /// underlying type.
+    TaintedPointer(Rc<RefCell<TaintedType>>),
     /// A struct, with the given element types
-    Struct(Vec<TaintedType>),
+    Struct(Vec<Rc<RefCell<TaintedType>>>),
 }
 
 impl TaintedType {
-    /// Produce the equivalent (untainted) `TaintedType` for a given LLVM type
+    /// Create a (fresh, unaliased) pointer to the given `TaintedType`
+    pub fn untainted_ptr_to(pointee: TaintedType) -> Self {
+        Self::UntaintedPointer(Rc::new(RefCell::new(pointee)))
+    }
+
+    /// Create a (fresh, unaliased) tainted pointer to the given `TaintedType`
+    pub fn tainted_ptr_to(pointee: TaintedType) -> Self {
+        Self::TaintedPointer(Rc::new(RefCell::new(pointee)))
+    }
+
+    /// Create a struct of the given elements, assuming that no pointers to those
+    /// elements already exist
+    pub fn struct_of(elements: impl IntoIterator<Item = TaintedType>) -> Self {
+        Self::Struct(elements.into_iter().map(|ty| Rc::new(RefCell::new(ty))).collect())
+    }
+
+    /// Produce the equivalent (untainted) `TaintedType` for a given LLVM type.
+    /// Pointers will point to fresh `TaintedType`s to represent their element
+    /// types; they will be assumed not to point to existing variables.
     fn from_llvm_type(llvm_ty: &Type) -> Self {
         match llvm_ty {
             Type::IntegerType { .. } => TaintedType::UntaintedValue,
-            Type::PointerType { pointee_type, .. } => TaintedType::UntaintedPointer(Box::new(TaintedType::from_llvm_type(&**pointee_type))),
+            Type::PointerType { pointee_type, .. } => TaintedType::untainted_ptr_to(TaintedType::from_llvm_type(&**pointee_type)),
             Type::FPType(_) => TaintedType::UntaintedValue,
             Type::VectorType { element_type, .. } => TaintedType::from_llvm_type(&**element_type),
             Type::ArrayType { element_type, .. } => TaintedType::from_llvm_type(&**element_type),
-            Type::StructType { element_types, .. } => TaintedType::Struct(element_types.iter().map(TaintedType::from_llvm_type).collect()),
+            Type::StructType { element_types, .. } => TaintedType::struct_of(element_types.iter().map(TaintedType::from_llvm_type)),
             Type::X86_MMXType => TaintedType::UntaintedValue,
             Type::MetadataType => TaintedType::UntaintedValue,
             _ => unimplemented!("TaintedType::from_llvm_type on {:?}", llvm_ty),
         }
     }
 
-    /// Get the `TaintedType` of a `Constant`
+    /// Get the `TaintedType` of a `Constant`.
+    /// If the `Constant` is a `GlobalReference`, we'll create a fresh
+    /// `TaintedType` for the global being referenced; we'll assume the global
+    /// hasn't been created yet.
     fn from_constant(constant: &Constant) -> Self {
         match constant {
             Constant::Int { .. } => TaintedType::UntaintedValue,
@@ -87,7 +116,7 @@ impl TaintedType {
             Constant::Null(ty) => TaintedType::from_llvm_type(ty),
             Constant::AggregateZero(ty) => TaintedType::from_llvm_type(ty),
             Constant::Struct { values, .. } => {
-                TaintedType::Struct(values.iter().map(|v| Self::from_constant(v)).collect())
+                TaintedType::struct_of(values.iter().map(|v| Self::from_constant(v)))
             },
             Constant::Array { element_type, .. } => TaintedType::from_llvm_type(element_type),
             Constant::Vector(vec) => {
@@ -95,7 +124,7 @@ impl TaintedType {
                 TaintedType::from_llvm_type(&vec.get(0).expect("Constant::Vector should not be empty").get_type())
             },
             Constant::Undef(ty) => TaintedType::from_llvm_type(ty),
-            Constant::GlobalReference { ty, .. } => TaintedType::UntaintedPointer(Box::new(TaintedType::from_llvm_type(ty))),
+            Constant::GlobalReference { ty, .. } => TaintedType::untainted_ptr_to(TaintedType::from_llvm_type(ty)),
             _ => unimplemented!("TaintedType::from_constant on {:?}", constant),
         }
     }
@@ -111,6 +140,13 @@ impl TaintedType {
         }
     }
 
+    /// Compute the join of two `TaintedType`s. For instance, joining a tainted
+    /// and an untainted produces a tainted; joining a type with itself produces
+    /// itself back.
+    ///
+    /// Joining two pointers will produce a fresh pointer to the join of their
+    /// elements; we'll assume that the join of their elements hadn't been
+    /// created yet.
     fn join(&self, other: &Self) -> Self {
         use TaintedType::*;
         match (self, other) {
@@ -118,13 +154,13 @@ impl TaintedType {
             (UntaintedValue, TaintedValue) => TaintedValue,
             (TaintedValue, UntaintedValue) => TaintedValue,
             (TaintedValue, TaintedValue) => TaintedValue,
-            (UntaintedPointer(pointee1), UntaintedPointer(pointee2)) => UntaintedPointer(Box::new(pointee1.join(&*pointee2))),
-            (UntaintedPointer(pointee1), TaintedPointer(pointee2)) => TaintedPointer(Box::new(pointee1.join(&*pointee2))),
-            (TaintedPointer(pointee1), UntaintedPointer(pointee2)) => TaintedPointer(Box::new(pointee1.join(&*pointee2))),
-            (TaintedPointer(pointee1), TaintedPointer(pointee2)) => TaintedPointer(Box::new(pointee1.join(&*pointee2))),
+            (UntaintedPointer(pointee1), UntaintedPointer(pointee2)) => Self::untainted_ptr_to(pointee1.borrow().join(&*pointee2.borrow())),
+            (UntaintedPointer(pointee1), TaintedPointer(pointee2)) => Self::tainted_ptr_to(pointee1.borrow().join(&*pointee2.borrow())),
+            (TaintedPointer(pointee1), UntaintedPointer(pointee2)) => Self::tainted_ptr_to(pointee1.borrow().join(&*pointee2.borrow())),
+            (TaintedPointer(pointee1), TaintedPointer(pointee2)) => Self::tainted_ptr_to(pointee1.borrow().join(&*pointee2.borrow())),
             (Struct(elements1), Struct(elements2)) => {
                 assert_eq!(elements1.len(), elements2.len(), "join: type mismatch: struct of {} elements with struct of {} elements", elements1.len(), elements2.len());
-                Struct(elements1.iter().zip(elements2.iter()).map(|(el1, el2)| el1.join(el2)).collect())
+                Self::struct_of(elements1.iter().zip(elements2.iter()).map(|(el1, el2)| el1.borrow().join(&el2.borrow())))
             },
             _ => panic!("join: type mismatch: {:?} vs. {:?}", self, other),
         }
@@ -259,8 +295,13 @@ impl TaintState {
                     self.update_var_taintedtype(sv.get_result().clone(), result_ty)
                 },
                 Instruction::ExtractValue(ev) => {
-                    let aggregate = self.get_type_of_operand(&ev.aggregate);
-                    self.update_var_taintedtype(ev.get_result().clone(), extract_value_from_struct_or_array(&aggregate, ev.indices.iter()).clone())
+                    let ptr_to_struct = TaintedType::untainted_ptr_to(self.get_type_of_operand(&ev.aggregate));
+                    let element_ptr_ty = get_element_ptr(&ptr_to_struct, &ev.indices);
+                    let element_ty = match element_ptr_ty {
+                        TaintedType::UntaintedPointer(rc) => rc.borrow().clone(),
+                        _ => panic!("ExtractValue: expected get_element_ptr to return an UntaintedPointer here"),
+                    };
+                    self.update_var_taintedtype(ev.get_result().clone(), element_ty)
                 },
                 Instruction::InsertValue(iv) => {
                     let mut aggregate = self.get_type_of_operand(&iv.aggregate);
@@ -272,7 +313,7 @@ impl TaintState {
                     let result_ty = if self.is_scalar_operand_tainted(&alloca.num_elements) {
                         TaintedType::TaintedValue
                     } else {
-                        TaintedType::UntaintedPointer(Box::new(TaintedType::from_llvm_type(&alloca.allocated_type)))
+                        TaintedType::untainted_ptr_to(TaintedType::from_llvm_type(&alloca.allocated_type))
                     };
                     self.update_var_taintedtype(alloca.get_result().clone(), result_ty)
                 },
@@ -281,8 +322,8 @@ impl TaintState {
                         TaintedType::UntaintedValue => panic!("Load: address is not a pointer: {:?}", &load.address),
                         TaintedType::TaintedValue => panic!("Load: address is not a pointer: {:?}", &load.address),
                         TaintedType::Struct(_) => panic!("Load: address is not a pointer: {:?}", &load.address),
-                        TaintedType::UntaintedPointer(pointee_type) => *pointee_type,
-                        TaintedType::TaintedPointer(pointee_type) => *pointee_type,  // we allow loading untainted data through a tainted pointer, for this analysis. Caller is welcome to do post-processing to taint every result of a load from a tainted address and then rerun the tainting algorithm.
+                        TaintedType::UntaintedPointer(pointee_type) => pointee_type.borrow().clone(),
+                        TaintedType::TaintedPointer(pointee_type) => pointee_type.borrow().clone(),  // we allow loading untainted data through a tainted pointer, for this analysis. Caller is welcome to do post-processing to taint every result of a load from a tainted address and then rerun the tainting algorithm.
                     };
                     self.update_var_taintedtype(load.get_result().clone(), result_ty)
                 },
@@ -291,37 +332,33 @@ impl TaintState {
                         TaintedType::UntaintedValue => panic!("Store: address is not a pointer: {:?}", &store.address),
                         TaintedType::TaintedValue => panic!("Store: address is not a pointer: {:?}", &store.address),
                         TaintedType::Struct(_) => panic!("Store: address is not a pointer: {:?}", &store.address),
-                        ptr_type@TaintedType::UntaintedPointer(_) | ptr_type@TaintedType::TaintedPointer(_) => {
+                        TaintedType::UntaintedPointer(rc) | TaintedType::TaintedPointer(rc) => {
                             // update the store address's type based on the value being stored through it
-                            let value_type = self.get_type_of_operand(&store.value);
-                            let address_name = match &store.address {
-                                Operand::LocalOperand { name , .. } => name.clone(),
-                                _ => panic!("Store: storing a tainted value to a constant address"),
-                            };
-                            let new_address_type = if ptr_type.is_tainted() {
-                                TaintedType::TaintedPointer(Box::new(value_type))
+                            let new_value_type = self.get_type_of_operand(&store.value);
+                            // update the pointee in the store's address type;
+                            // e.g., if we're storing a tainted value, we want
+                            // to update the address type to "pointer to tainted"
+                            let mut value_type = rc.borrow_mut();
+                            let joined_value_type = new_value_type.join(&value_type);
+                            if &*value_type == &joined_value_type {
+                                // no change is necessary
+                                false
                             } else {
-                                TaintedType::UntaintedPointer(Box::new(value_type))
-                            };
-                            self.update_var_taintedtype(address_name, new_address_type)
+                                // update the address type.
+                                // Using `rc.replace()` ensures that other pointers to the same type will
+                                // automatically be updated as well. For instance, if we have a pointer to
+                                // an array, then GEP to get pointer to 3rd element, then store a tainted
+                                // value to that 3rd element, we want to update _both pointers_ (the original
+                                // array pointer, and the element pointer) to have type pointer-to-tainted.
+                                *value_type = joined_value_type;
+                                true
+                            }
                         },
                     }
                 },
                 Instruction::Fence(_) => false,
                 Instruction::GetElementPtr(gep) => {
-                    let result_ty = match self.get_type_of_operand(&gep.address) {
-                        TaintedType::UntaintedValue => panic!("GEP: address is not a pointer: {:?}", &gep.address),
-                        TaintedType::TaintedValue => panic!("GEP: address is not a pointer: {:?}", &gep.address),
-                        TaintedType::Struct(_) => panic!("GEP: address is not a pointer: {:?}", &gep.address),
-                        t@TaintedType::UntaintedPointer(_) => {
-                            let eltype = extract_value_from_struct_or_array(&t, gep.indices.iter()).clone();
-                            TaintedType::UntaintedPointer(Box::new(eltype))
-                        },
-                        t@TaintedType::TaintedPointer(_) => {
-                           let eltype = extract_value_from_struct_or_array(&t, gep.indices.iter()).clone();
-                           TaintedType::TaintedPointer(Box::new(eltype))
-                        },
-                    };
+                    let result_ty = get_element_ptr(&self.get_type_of_operand(&gep.address), &gep.indices);
                     self.update_var_taintedtype(gep.get_result().clone(), result_ty)
                 },
                 Instruction::PtrToInt(pti) => {
@@ -449,33 +486,61 @@ impl Index for &u64 {
     }
 }
 
-/// Given a struct type (or element type of an array) and a list of indices for
-/// recursive descent, return the type of the indicated element
-fn extract_value_from_struct_or_array<'a, 'b, I: Index + 'b>(aggregate: &'a TaintedType, mut indices: impl Iterator<Item = &'b I>) -> &'a TaintedType {
-    match indices.next() {
-        None => aggregate,
-        Some(index) => match aggregate {
-            TaintedType::Struct(elements) => {
-                let index = index.as_constant().unwrap_or_else(|| panic!("indexing a struct by nonconstant index; index {:?} in struct {:?}", index, aggregate));
-                let chosen_element = elements.get(index as usize).unwrap_or_else(|| panic!("struct index out of range: index {:?} in struct {:?}", index, aggregate));
-                extract_value_from_struct_or_array(chosen_element, indices)
-            },
-            t@TaintedType::UntaintedValue => match indices.next() {
-                Some(_) => panic!("extract_value_from_struct_or_array: more indices than expected, dereferencing a scalar"),
-                None => t,
-            },
-            t@TaintedType::TaintedValue => match indices.next() {
-                Some(_) => panic!("extract_value_from_struct_or_array: more indices than expected, dereferencing a scalar"),
-                None => t,
-            },
-            TaintedType::UntaintedPointer(pointee_type) => {
-                extract_value_from_struct_or_array(pointee_type, indices)
-            },
-            TaintedType::TaintedPointer(pointee_type) => {
-                // for this analysis, allowing extracting through tainted
-                // pointer, just get the element type. Consequences of the
-                // pointer being tainted is a separate issue.
-                extract_value_from_struct_or_array(pointee_type, indices)
+fn get_element_ptr<'a, 'b, I: Index + 'b>(parent_ptr: &'a TaintedType, indices: impl IntoIterator<Item = &'b I>) -> TaintedType {
+    _get_element_ptr(parent_ptr, indices.into_iter().peekable())
+}
+
+fn _get_element_ptr<'a, 'b, I: Index + 'b>(parent_ptr: &'a TaintedType, mut indices: std::iter::Peekable<impl Iterator<Item = &'b I>>) -> TaintedType {
+    let index = match indices.next() {
+        Some(index) => index,
+        None => panic!("get_element_ptr: called with no indices"),
+    };
+    match parent_ptr {
+        TaintedType::UntaintedValue => panic!("get_element_ptr: address is not a pointer, or too many indices"),
+        TaintedType::TaintedValue => panic!("get_element_ptr: address is not a pointer, or too many indices"),
+        TaintedType::Struct(_) => panic!("get_element_ptr: address is not a pointer, or too many indices"),
+        TaintedType::UntaintedPointer(rc) | TaintedType::TaintedPointer(rc) => {
+            let pointee: &TaintedType = &rc.borrow();
+            match pointee {
+                TaintedType::TaintedValue | TaintedType::UntaintedValue => {
+                    // We expect that indices.peek() would give None in this
+                    // case. However, there may be an extra index due to
+                    // selecting an element of a first-class array or vector
+                    // (which are TaintedValue or UntaintedValue in our type
+                    // system). So we just ignore any extra indices.
+                    if parent_ptr.is_tainted() {
+                        TaintedType::TaintedPointer(rc.clone())
+                    } else {
+                        TaintedType::UntaintedPointer(rc.clone())
+                    }
+                },
+                inner_ptr @ TaintedType::TaintedPointer(_) | inner_ptr @ TaintedType::UntaintedPointer(_) => {
+                    // We'll taint the resulting element ptr depending on the
+                    // taint status of the inner_ptr, ignoring the taint status
+                    // of the parent_ptr. I believe this is correct for most use
+                    // cases.
+                    match indices.peek() {
+                        None if inner_ptr.is_tainted() => TaintedType::TaintedPointer(rc.clone()),
+                        None => TaintedType::UntaintedPointer(rc.clone()),
+                        Some(_) => _get_element_ptr(inner_ptr, indices),
+                    }
+                },
+                TaintedType::Struct(elements) => {
+                    let index = index.as_constant().expect("get_element_ptr: indexing into a struct at non-Constant index");
+                    let pointee = elements
+                        .get(index as usize)
+                        .unwrap_or_else(|| panic!("get_element_ptr: index out of range: index {:?} in struct {:?}", index, pointee));
+                    match indices.peek() {
+                        None => {
+                            if parent_ptr.is_tainted() {
+                                TaintedType::TaintedPointer(pointee.clone())
+                            } else {
+                                TaintedType::UntaintedPointer(pointee.clone())
+                            }
+                        },
+                        Some(_) => _get_element_ptr(&pointee.borrow(), indices),
+                    }
+                },
             }
         },
     }
