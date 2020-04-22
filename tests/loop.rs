@@ -12,7 +12,9 @@ fn get_module() -> Module {
 fn while_loop() {
     let funcname = "while_loop";
     let module = get_module();
-    let func = module.get_func_by_name(funcname).unwrap_or_else(|| panic!("Failed to find function named {:?}", funcname));
+    let func = module
+        .get_func_by_name(funcname)
+        .unwrap_or_else(|| panic!("Failed to find function named {:?}", funcname));
 
     // Mark %8 tainted, manually. This should mean that although %7 was marked
     // untainted on the first pass, at fixpoint it should be marked tainted.
@@ -21,14 +23,19 @@ fn while_loop() {
         vec![TaintedType::UntaintedValue],
         std::iter::once((Name::from(8), TaintedType::TaintedValue)).collect(),
     );
-    assert_eq!(taintmap.get(&Name::from(7)), Some(&TaintedType::TaintedValue));
+    assert_eq!(
+        taintmap.get(&Name::from(7)),
+        Some(&TaintedType::TaintedValue)
+    );
 }
 
 #[test]
 fn for_loop() {
     let funcname = "for_loop";
     let module = get_module();
-    let func = module.get_func_by_name(funcname).unwrap_or_else(|| panic!("Failed to find function named {:?}", funcname));
+    let func = module
+        .get_func_by_name(funcname)
+        .unwrap_or_else(|| panic!("Failed to find function named {:?}", funcname));
 
     // Mark %12 tainted, manually. This should mean that %8 (the return value)
     // ends up tainted at fixpoint.
@@ -37,14 +44,19 @@ fn for_loop() {
         vec![TaintedType::UntaintedValue],
         std::iter::once((Name::from(12), TaintedType::TaintedValue)).collect(),
     );
-    assert_eq!(taintmap.get(&Name::from(8)), Some(&TaintedType::TaintedValue));
+    assert_eq!(
+        taintmap.get(&Name::from(8)),
+        Some(&TaintedType::TaintedValue)
+    );
 }
 
 #[test]
 fn loop_over_array() {
     let funcname = "loop_over_array";
     let module = get_module();
-    let func = module.get_func_by_name(funcname).unwrap_or_else(|| panic!("Failed to find function named {:?}", funcname));
+    let func = module
+        .get_func_by_name(funcname)
+        .unwrap_or_else(|| panic!("Failed to find function named {:?}", funcname));
 
     // Tainting %12 should be sufficient to taint %8 on a subsequent pass, and
     // %11 should be marked as pointer-to-tainted.
@@ -54,7 +66,16 @@ fn loop_over_array() {
         vec![TaintedType::UntaintedValue],
         std::iter::once((Name::from(12), TaintedType::TaintedValue)).collect(),
     );
-    assert_eq!(taintmap.get(&Name::from(8)), Some(&TaintedType::TaintedValue));
-    assert_eq!(taintmap.get(&Name::from(11)), Some(&TaintedType::untainted_ptr_to(TaintedType::TaintedValue)));
-    assert_eq!(taintmap.get(&Name::from(6)), Some(&TaintedType::TaintedValue));
+    assert_eq!(
+        taintmap.get(&Name::from(8)),
+        Some(&TaintedType::TaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(11)),
+        Some(&TaintedType::untainted_ptr_to(TaintedType::TaintedValue))
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(6)),
+        Some(&TaintedType::TaintedValue)
+    );
 }

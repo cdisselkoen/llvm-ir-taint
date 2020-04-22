@@ -19,7 +19,9 @@ fn get_memory_module() -> Module {
 fn basic_operation() {
     let funcname = "two_args";
     let module = get_basic_module();
-    let func = module.get_func_by_name(funcname).unwrap_or_else(|| panic!("Failed to find function named {:?}", funcname));
+    let func = module
+        .get_func_by_name(funcname)
+        .unwrap_or_else(|| panic!("Failed to find function named {:?}", funcname));
 
     // with both arguments tainted
     let taintmap = get_taint_map_for_function(
@@ -27,10 +29,22 @@ fn basic_operation() {
         vec![TaintedType::TaintedValue, TaintedType::TaintedValue],
         HashMap::new(),
     );
-    assert_eq!(taintmap.get(&Name::from(0)), Some(&TaintedType::TaintedValue));
-    assert_eq!(taintmap.get(&Name::from(1)), Some(&TaintedType::TaintedValue));
-    assert_eq!(taintmap.get(&Name::from(3)), Some(&TaintedType::TaintedValue));
-    assert_eq!(taintmap.get(&Name::from(4)), Some(&TaintedType::TaintedValue));
+    assert_eq!(
+        taintmap.get(&Name::from(0)),
+        Some(&TaintedType::TaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(1)),
+        Some(&TaintedType::TaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(3)),
+        Some(&TaintedType::TaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(4)),
+        Some(&TaintedType::TaintedValue)
+    );
 
     // with neither argument tainted
     let taintmap = get_taint_map_for_function(
@@ -38,10 +52,22 @@ fn basic_operation() {
         vec![TaintedType::UntaintedValue, TaintedType::UntaintedValue],
         HashMap::new(),
     );
-    assert_eq!(taintmap.get(&Name::from(0)), Some(&TaintedType::UntaintedValue));
-    assert_eq!(taintmap.get(&Name::from(1)), Some(&TaintedType::UntaintedValue));
-    assert_eq!(taintmap.get(&Name::from(3)), Some(&TaintedType::UntaintedValue));
-    assert_eq!(taintmap.get(&Name::from(4)), Some(&TaintedType::UntaintedValue));
+    assert_eq!(
+        taintmap.get(&Name::from(0)),
+        Some(&TaintedType::UntaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(1)),
+        Some(&TaintedType::UntaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(3)),
+        Some(&TaintedType::UntaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(4)),
+        Some(&TaintedType::UntaintedValue)
+    );
 
     // with just the first argument tainted
     let taintmap = get_taint_map_for_function(
@@ -49,10 +75,22 @@ fn basic_operation() {
         vec![TaintedType::TaintedValue, TaintedType::UntaintedValue],
         HashMap::new(),
     );
-    assert_eq!(taintmap.get(&Name::from(0)), Some(&TaintedType::TaintedValue));
-    assert_eq!(taintmap.get(&Name::from(1)), Some(&TaintedType::UntaintedValue));
-    assert_eq!(taintmap.get(&Name::from(3)), Some(&TaintedType::TaintedValue));
-    assert_eq!(taintmap.get(&Name::from(4)), Some(&TaintedType::TaintedValue));
+    assert_eq!(
+        taintmap.get(&Name::from(0)),
+        Some(&TaintedType::TaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(1)),
+        Some(&TaintedType::UntaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(3)),
+        Some(&TaintedType::TaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(4)),
+        Some(&TaintedType::TaintedValue)
+    );
 
     // with just the second argument tainted
     let taintmap = get_taint_map_for_function(
@@ -60,17 +98,31 @@ fn basic_operation() {
         vec![TaintedType::UntaintedValue, TaintedType::TaintedValue],
         HashMap::new(),
     );
-    assert_eq!(taintmap.get(&Name::from(0)), Some(&TaintedType::UntaintedValue));
-    assert_eq!(taintmap.get(&Name::from(1)), Some(&TaintedType::TaintedValue));
-    assert_eq!(taintmap.get(&Name::from(3)), Some(&TaintedType::UntaintedValue));
-    assert_eq!(taintmap.get(&Name::from(4)), Some(&TaintedType::TaintedValue));
+    assert_eq!(
+        taintmap.get(&Name::from(0)),
+        Some(&TaintedType::UntaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(1)),
+        Some(&TaintedType::TaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(3)),
+        Some(&TaintedType::UntaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(4)),
+        Some(&TaintedType::TaintedValue)
+    );
 }
 
 #[test]
 fn binops() {
     let funcname = "binops";
     let module = get_basic_module();
-    let func = module.get_func_by_name(funcname).unwrap_or_else(|| panic!("Failed to find function named {:?}", funcname));
+    let func = module
+        .get_func_by_name(funcname)
+        .unwrap_or_else(|| panic!("Failed to find function named {:?}", funcname));
 
     // with both arguments tainted
     let taintmap = get_taint_map_for_function(
@@ -78,19 +130,58 @@ fn binops() {
         vec![TaintedType::TaintedValue, TaintedType::TaintedValue],
         HashMap::new(),
     );
-    assert_eq!(taintmap.get(&Name::from(0)), Some(&TaintedType::TaintedValue));
-    assert_eq!(taintmap.get(&Name::from(1)), Some(&TaintedType::TaintedValue));
-    assert_eq!(taintmap.get(&Name::from(3)), Some(&TaintedType::TaintedValue));
-    assert_eq!(taintmap.get(&Name::from(4)), Some(&TaintedType::TaintedValue));
-    assert_eq!(taintmap.get(&Name::from(5)), Some(&TaintedType::TaintedValue));
-    assert_eq!(taintmap.get(&Name::from(6)), Some(&TaintedType::TaintedValue));
-    assert_eq!(taintmap.get(&Name::from(7)), Some(&TaintedType::TaintedValue));
-    assert_eq!(taintmap.get(&Name::from(8)), Some(&TaintedType::TaintedValue));
-    assert_eq!(taintmap.get(&Name::from(9)), Some(&TaintedType::TaintedValue));
-    assert_eq!(taintmap.get(&Name::from(10)), Some(&TaintedType::TaintedValue));
-    assert_eq!(taintmap.get(&Name::from(11)), Some(&TaintedType::TaintedValue));
-    assert_eq!(taintmap.get(&Name::from(12)), Some(&TaintedType::TaintedValue));
-    assert_eq!(taintmap.get(&Name::from(13)), Some(&TaintedType::TaintedValue));
+    assert_eq!(
+        taintmap.get(&Name::from(0)),
+        Some(&TaintedType::TaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(1)),
+        Some(&TaintedType::TaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(3)),
+        Some(&TaintedType::TaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(4)),
+        Some(&TaintedType::TaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(5)),
+        Some(&TaintedType::TaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(6)),
+        Some(&TaintedType::TaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(7)),
+        Some(&TaintedType::TaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(8)),
+        Some(&TaintedType::TaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(9)),
+        Some(&TaintedType::TaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(10)),
+        Some(&TaintedType::TaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(11)),
+        Some(&TaintedType::TaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(12)),
+        Some(&TaintedType::TaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(13)),
+        Some(&TaintedType::TaintedValue)
+    );
 
     // with neither argument tainted
     let taintmap = get_taint_map_for_function(
@@ -98,19 +189,58 @@ fn binops() {
         vec![TaintedType::UntaintedValue, TaintedType::UntaintedValue],
         HashMap::new(),
     );
-    assert_eq!(taintmap.get(&Name::from(0)), Some(&TaintedType::UntaintedValue));
-    assert_eq!(taintmap.get(&Name::from(1)), Some(&TaintedType::UntaintedValue));
-    assert_eq!(taintmap.get(&Name::from(3)), Some(&TaintedType::UntaintedValue));
-    assert_eq!(taintmap.get(&Name::from(4)), Some(&TaintedType::UntaintedValue));
-    assert_eq!(taintmap.get(&Name::from(5)), Some(&TaintedType::UntaintedValue));
-    assert_eq!(taintmap.get(&Name::from(6)), Some(&TaintedType::UntaintedValue));
-    assert_eq!(taintmap.get(&Name::from(7)), Some(&TaintedType::UntaintedValue));
-    assert_eq!(taintmap.get(&Name::from(8)), Some(&TaintedType::UntaintedValue));
-    assert_eq!(taintmap.get(&Name::from(9)), Some(&TaintedType::UntaintedValue));
-    assert_eq!(taintmap.get(&Name::from(10)), Some(&TaintedType::UntaintedValue));
-    assert_eq!(taintmap.get(&Name::from(11)), Some(&TaintedType::UntaintedValue));
-    assert_eq!(taintmap.get(&Name::from(12)), Some(&TaintedType::UntaintedValue));
-    assert_eq!(taintmap.get(&Name::from(13)), Some(&TaintedType::UntaintedValue));
+    assert_eq!(
+        taintmap.get(&Name::from(0)),
+        Some(&TaintedType::UntaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(1)),
+        Some(&TaintedType::UntaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(3)),
+        Some(&TaintedType::UntaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(4)),
+        Some(&TaintedType::UntaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(5)),
+        Some(&TaintedType::UntaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(6)),
+        Some(&TaintedType::UntaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(7)),
+        Some(&TaintedType::UntaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(8)),
+        Some(&TaintedType::UntaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(9)),
+        Some(&TaintedType::UntaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(10)),
+        Some(&TaintedType::UntaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(11)),
+        Some(&TaintedType::UntaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(12)),
+        Some(&TaintedType::UntaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(13)),
+        Some(&TaintedType::UntaintedValue)
+    );
 
     // with just the second argument tainted
     let taintmap = get_taint_map_for_function(
@@ -118,19 +248,58 @@ fn binops() {
         vec![TaintedType::UntaintedValue, TaintedType::TaintedValue],
         HashMap::new(),
     );
-    assert_eq!(taintmap.get(&Name::from(0)), Some(&TaintedType::UntaintedValue));
-    assert_eq!(taintmap.get(&Name::from(1)), Some(&TaintedType::TaintedValue));
-    assert_eq!(taintmap.get(&Name::from(3)), Some(&TaintedType::UntaintedValue));
-    assert_eq!(taintmap.get(&Name::from(4)), Some(&TaintedType::UntaintedValue));
-    assert_eq!(taintmap.get(&Name::from(5)), Some(&TaintedType::TaintedValue));
-    assert_eq!(taintmap.get(&Name::from(6)), Some(&TaintedType::TaintedValue));
-    assert_eq!(taintmap.get(&Name::from(7)), Some(&TaintedType::TaintedValue));
-    assert_eq!(taintmap.get(&Name::from(8)), Some(&TaintedType::UntaintedValue));
-    assert_eq!(taintmap.get(&Name::from(9)), Some(&TaintedType::TaintedValue));
-    assert_eq!(taintmap.get(&Name::from(10)), Some(&TaintedType::TaintedValue));
-    assert_eq!(taintmap.get(&Name::from(11)), Some(&TaintedType::TaintedValue));
-    assert_eq!(taintmap.get(&Name::from(12)), Some(&TaintedType::TaintedValue));
-    assert_eq!(taintmap.get(&Name::from(13)), Some(&TaintedType::TaintedValue));
+    assert_eq!(
+        taintmap.get(&Name::from(0)),
+        Some(&TaintedType::UntaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(1)),
+        Some(&TaintedType::TaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(3)),
+        Some(&TaintedType::UntaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(4)),
+        Some(&TaintedType::UntaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(5)),
+        Some(&TaintedType::TaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(6)),
+        Some(&TaintedType::TaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(7)),
+        Some(&TaintedType::TaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(8)),
+        Some(&TaintedType::UntaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(9)),
+        Some(&TaintedType::TaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(10)),
+        Some(&TaintedType::TaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(11)),
+        Some(&TaintedType::TaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(12)),
+        Some(&TaintedType::TaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(13)),
+        Some(&TaintedType::TaintedValue)
+    );
 
     // with %8 manually tainted, and nothing else
     let taintmap = get_taint_map_for_function(
@@ -138,26 +307,67 @@ fn binops() {
         vec![TaintedType::UntaintedValue, TaintedType::UntaintedValue],
         std::iter::once((Name::from(8), TaintedType::TaintedValue)).collect(),
     );
-    assert_eq!(taintmap.get(&Name::from(0)), Some(&TaintedType::UntaintedValue));
-    assert_eq!(taintmap.get(&Name::from(1)), Some(&TaintedType::UntaintedValue));
-    assert_eq!(taintmap.get(&Name::from(3)), Some(&TaintedType::UntaintedValue));
-    assert_eq!(taintmap.get(&Name::from(4)), Some(&TaintedType::UntaintedValue));
-    assert_eq!(taintmap.get(&Name::from(5)), Some(&TaintedType::UntaintedValue));
-    assert_eq!(taintmap.get(&Name::from(6)), Some(&TaintedType::UntaintedValue));
-    assert_eq!(taintmap.get(&Name::from(7)), Some(&TaintedType::UntaintedValue));
-    assert_eq!(taintmap.get(&Name::from(8)), Some(&TaintedType::TaintedValue));
-    assert_eq!(taintmap.get(&Name::from(9)), Some(&TaintedType::TaintedValue));
-    assert_eq!(taintmap.get(&Name::from(10)), Some(&TaintedType::TaintedValue));
-    assert_eq!(taintmap.get(&Name::from(11)), Some(&TaintedType::UntaintedValue));
-    assert_eq!(taintmap.get(&Name::from(12)), Some(&TaintedType::TaintedValue));
-    assert_eq!(taintmap.get(&Name::from(13)), Some(&TaintedType::TaintedValue));
+    assert_eq!(
+        taintmap.get(&Name::from(0)),
+        Some(&TaintedType::UntaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(1)),
+        Some(&TaintedType::UntaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(3)),
+        Some(&TaintedType::UntaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(4)),
+        Some(&TaintedType::UntaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(5)),
+        Some(&TaintedType::UntaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(6)),
+        Some(&TaintedType::UntaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(7)),
+        Some(&TaintedType::UntaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(8)),
+        Some(&TaintedType::TaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(9)),
+        Some(&TaintedType::TaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(10)),
+        Some(&TaintedType::TaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(11)),
+        Some(&TaintedType::UntaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(12)),
+        Some(&TaintedType::TaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(13)),
+        Some(&TaintedType::TaintedValue)
+    );
 }
 
 #[test]
 fn phi() {
     let funcname = "conditional_nozero";
     let module = get_basic_module();
-    let func = module.get_func_by_name(funcname).unwrap_or_else(|| panic!("Failed to find function named {:?}", funcname));
+    let func = module
+        .get_func_by_name(funcname)
+        .unwrap_or_else(|| panic!("Failed to find function named {:?}", funcname));
 
     // with both arguments untainted
     let taintmap = get_taint_map_for_function(
@@ -165,11 +375,26 @@ fn phi() {
         vec![TaintedType::UntaintedValue, TaintedType::UntaintedValue],
         HashMap::new(),
     );
-    assert_eq!(taintmap.get(&Name::from(0)), Some(&TaintedType::UntaintedValue));
-    assert_eq!(taintmap.get(&Name::from(1)), Some(&TaintedType::UntaintedValue));
-    assert_eq!(taintmap.get(&Name::from(3)), Some(&TaintedType::UntaintedValue));
-    assert_eq!(taintmap.get(&Name::from(7)), Some(&TaintedType::UntaintedValue));
-    assert_eq!(taintmap.get(&Name::from(15)), Some(&TaintedType::UntaintedValue));
+    assert_eq!(
+        taintmap.get(&Name::from(0)),
+        Some(&TaintedType::UntaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(1)),
+        Some(&TaintedType::UntaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(3)),
+        Some(&TaintedType::UntaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(7)),
+        Some(&TaintedType::UntaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(15)),
+        Some(&TaintedType::UntaintedValue)
+    );
 
     // with second argument tainted
     let taintmap = get_taint_map_for_function(
@@ -177,141 +402,241 @@ fn phi() {
         vec![TaintedType::UntaintedValue, TaintedType::TaintedValue],
         HashMap::new(),
     );
-    assert_eq!(taintmap.get(&Name::from(0)), Some(&TaintedType::UntaintedValue));
-    assert_eq!(taintmap.get(&Name::from(1)), Some(&TaintedType::TaintedValue));
-    assert_eq!(taintmap.get(&Name::from(3)), Some(&TaintedType::UntaintedValue));
-    assert_eq!(taintmap.get(&Name::from(7)), Some(&TaintedType::TaintedValue));
-    assert_eq!(taintmap.get(&Name::from(15)), Some(&TaintedType::TaintedValue));  // some phi options are tainted and some not; result of phi should be tainted in this case
+    assert_eq!(
+        taintmap.get(&Name::from(0)),
+        Some(&TaintedType::UntaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(1)),
+        Some(&TaintedType::TaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(3)),
+        Some(&TaintedType::UntaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(7)),
+        Some(&TaintedType::TaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(15)),
+        Some(&TaintedType::TaintedValue)
+    ); // some phi options are tainted and some not; result of phi should be tainted in this case
 }
 
 #[test]
 fn load_and_store() {
     let funcname = "load_and_store";
     let module = get_memory_module();
-    let func = module.get_func_by_name(funcname).unwrap_or_else(|| panic!("Failed to find function named {:?}", funcname));
+    let func = module
+        .get_func_by_name(funcname)
+        .unwrap_or_else(|| panic!("Failed to find function named {:?}", funcname));
 
     // with both arguments untainted
     let taintmap = get_taint_map_for_function(
         func,
-        vec![TaintedType::untainted_ptr_to(TaintedType::UntaintedValue), TaintedType::UntaintedValue],
+        vec![
+            TaintedType::untainted_ptr_to(TaintedType::UntaintedValue),
+            TaintedType::UntaintedValue,
+        ],
         HashMap::new(),
     );
-    assert_eq!(taintmap.get(&Name::from(0)), Some(&TaintedType::untainted_ptr_to(TaintedType::UntaintedValue)));
-    assert_eq!(taintmap.get(&Name::from(1)), Some(&TaintedType::UntaintedValue));
-    assert_eq!(taintmap.get(&Name::from(3)), Some(&TaintedType::UntaintedValue));
-    assert_eq!(taintmap.get(&Name::from(4)), Some(&TaintedType::UntaintedValue));
+    assert_eq!(
+        taintmap.get(&Name::from(0)),
+        Some(&TaintedType::untainted_ptr_to(TaintedType::UntaintedValue))
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(1)),
+        Some(&TaintedType::UntaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(3)),
+        Some(&TaintedType::UntaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(4)),
+        Some(&TaintedType::UntaintedValue)
+    );
 
     // with value tainted: make sure that we correctly load a tainted value
     let taintmap = get_taint_map_for_function(
         func,
-        vec![TaintedType::untainted_ptr_to(TaintedType::UntaintedValue), TaintedType::TaintedValue],
+        vec![
+            TaintedType::untainted_ptr_to(TaintedType::UntaintedValue),
+            TaintedType::TaintedValue,
+        ],
         HashMap::new(),
     );
-    assert_eq!(taintmap.get(&Name::from(0)), Some(&TaintedType::untainted_ptr_to(TaintedType::TaintedValue)));  // %0 should have been updated to be pointer-to-tainted
-    assert_eq!(taintmap.get(&Name::from(1)), Some(&TaintedType::TaintedValue));
-    assert_eq!(taintmap.get(&Name::from(3)), Some(&TaintedType::TaintedValue));
-    assert_eq!(taintmap.get(&Name::from(4)), Some(&TaintedType::TaintedValue));
+    assert_eq!(
+        taintmap.get(&Name::from(0)),
+        Some(&TaintedType::untainted_ptr_to(TaintedType::TaintedValue))
+    ); // %0 should have been updated to be pointer-to-tainted
+    assert_eq!(
+        taintmap.get(&Name::from(1)),
+        Some(&TaintedType::TaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(3)),
+        Some(&TaintedType::TaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(4)),
+        Some(&TaintedType::TaintedValue)
+    );
 }
 
 #[test]
 fn alloca() {
     let funcname = "local_ptr";
     let module = get_memory_module();
-    let func = module.get_func_by_name(funcname).unwrap_or_else(|| panic!("Failed to find function named {:?}", funcname));
+    let func = module
+        .get_func_by_name(funcname)
+        .unwrap_or_else(|| panic!("Failed to find function named {:?}", funcname));
 
     // with the argument untainted
-    let taintmap = get_taint_map_for_function(
-        func,
-        vec![TaintedType::UntaintedValue],
-        HashMap::new(),
-    );
-    assert_eq!(taintmap.get(&Name::from(5)), Some(&TaintedType::UntaintedValue));  // load untainted value from the alloca'd space
+    let taintmap =
+        get_taint_map_for_function(func, vec![TaintedType::UntaintedValue], HashMap::new());
+    assert_eq!(
+        taintmap.get(&Name::from(5)),
+        Some(&TaintedType::UntaintedValue)
+    ); // load untainted value from the alloca'd space
 
     // with the argument tainted
-    let taintmap = get_taint_map_for_function(
-        func,
-        vec![TaintedType::TaintedValue],
-        HashMap::new(),
-    );
-    assert_eq!(taintmap.get(&Name::from(5)), Some(&TaintedType::TaintedValue));  // load tainted value from the alloca'd space
-    assert_eq!(taintmap.get(&Name::from(2)), Some(&TaintedType::untainted_ptr_to(TaintedType::TaintedValue)));  // also, the alloca pointer should have type pointer-to-tainted
+    let taintmap =
+        get_taint_map_for_function(func, vec![TaintedType::TaintedValue], HashMap::new());
+    assert_eq!(
+        taintmap.get(&Name::from(5)),
+        Some(&TaintedType::TaintedValue)
+    ); // load tainted value from the alloca'd space
+    assert_eq!(
+        taintmap.get(&Name::from(2)),
+        Some(&TaintedType::untainted_ptr_to(TaintedType::TaintedValue))
+    ); // also, the alloca pointer should have type pointer-to-tainted
 }
 
 #[test]
 fn overwrite() {
     let funcname = "overwrite";
     let module = get_memory_module();
-    let func = module.get_func_by_name(funcname).unwrap_or_else(|| panic!("Failed to find function named {:?}", funcname));
+    let func = module
+        .get_func_by_name(funcname)
+        .unwrap_or_else(|| panic!("Failed to find function named {:?}", funcname));
 
     // with both arguments untainted
     let taintmap = get_taint_map_for_function(
         func,
-        vec![TaintedType::untainted_ptr_to(TaintedType::UntaintedValue), TaintedType::UntaintedValue],
+        vec![
+            TaintedType::untainted_ptr_to(TaintedType::UntaintedValue),
+            TaintedType::UntaintedValue,
+        ],
         HashMap::new(),
     );
-    assert_eq!(taintmap.get(&Name::from(4)), Some(&TaintedType::UntaintedValue));
+    assert_eq!(
+        taintmap.get(&Name::from(4)),
+        Some(&TaintedType::UntaintedValue)
+    );
 
     // with the second argument tainted
     let taintmap = get_taint_map_for_function(
         func,
-        vec![TaintedType::untainted_ptr_to(TaintedType::UntaintedValue), TaintedType::TaintedValue],
+        vec![
+            TaintedType::untainted_ptr_to(TaintedType::UntaintedValue),
+            TaintedType::TaintedValue,
+        ],
         HashMap::new(),
     );
-    assert_eq!(taintmap.get(&Name::from(4)), Some(&TaintedType::TaintedValue));
+    assert_eq!(
+        taintmap.get(&Name::from(4)),
+        Some(&TaintedType::TaintedValue)
+    );
 }
 
 #[test]
 fn load_and_store_mult() {
     let funcname = "load_and_store_mult";
     let module = get_memory_module();
-    let func = module.get_func_by_name(funcname).unwrap_or_else(|| panic!("Failed to find function named {:?}", funcname));
+    let func = module
+        .get_func_by_name(funcname)
+        .unwrap_or_else(|| panic!("Failed to find function named {:?}", funcname));
 
     // with both arguments untainted
     let taintmap = get_taint_map_for_function(
         func,
-        vec![TaintedType::untainted_ptr_to(TaintedType::UntaintedValue), TaintedType::UntaintedValue],
+        vec![
+            TaintedType::untainted_ptr_to(TaintedType::UntaintedValue),
+            TaintedType::UntaintedValue,
+        ],
         HashMap::new(),
     );
-    assert_eq!(taintmap.get(&Name::from(7)), Some(&TaintedType::UntaintedValue));
+    assert_eq!(
+        taintmap.get(&Name::from(7)),
+        Some(&TaintedType::UntaintedValue)
+    );
 
     // with the second argument tainted
     let taintmap = get_taint_map_for_function(
         func,
-        vec![TaintedType::untainted_ptr_to(TaintedType::UntaintedValue), TaintedType::TaintedValue],
+        vec![
+            TaintedType::untainted_ptr_to(TaintedType::UntaintedValue),
+            TaintedType::TaintedValue,
+        ],
         HashMap::new(),
     );
-    assert_eq!(taintmap.get(&Name::from(7)), Some(&TaintedType::TaintedValue));
+    assert_eq!(
+        taintmap.get(&Name::from(7)),
+        Some(&TaintedType::TaintedValue)
+    );
 }
 
 #[test]
 fn array() {
     let funcname = "load_and_store_mult";
     let module = get_memory_module();
-    let func = module.get_func_by_name(funcname).unwrap_or_else(|| panic!("Failed to find function named {:?}", funcname));
+    let func = module
+        .get_func_by_name(funcname)
+        .unwrap_or_else(|| panic!("Failed to find function named {:?}", funcname));
 
     // with both arguments untainted
     let taintmap = get_taint_map_for_function(
         func,
-        vec![TaintedType::untainted_ptr_to(TaintedType::UntaintedValue), TaintedType::UntaintedValue],
+        vec![
+            TaintedType::untainted_ptr_to(TaintedType::UntaintedValue),
+            TaintedType::UntaintedValue,
+        ],
         HashMap::new(),
     );
-    assert_eq!(taintmap.get(&Name::from(6)), Some(&TaintedType::UntaintedValue));
+    assert_eq!(
+        taintmap.get(&Name::from(6)),
+        Some(&TaintedType::UntaintedValue)
+    );
 
     // with the second argument tainted
     let taintmap = get_taint_map_for_function(
         func,
-        vec![TaintedType::untainted_ptr_to(TaintedType::UntaintedValue), TaintedType::TaintedValue],
+        vec![
+            TaintedType::untainted_ptr_to(TaintedType::UntaintedValue),
+            TaintedType::TaintedValue,
+        ],
         HashMap::new(),
     );
-    assert_eq!(taintmap.get(&Name::from(6)), Some(&TaintedType::TaintedValue));
+    assert_eq!(
+        taintmap.get(&Name::from(6)),
+        Some(&TaintedType::TaintedValue)
+    );
 
     // with %5 tainted but %3 not. In this case we want to ensure that the
     // (tainted) store to %0 doesn't affect the load from %4, which should
     // remain untainted.
     let taintmap = get_taint_map_for_function(
         func,
-        vec![TaintedType::untainted_ptr_to(TaintedType::UntaintedValue), TaintedType::UntaintedValue],
+        vec![
+            TaintedType::untainted_ptr_to(TaintedType::UntaintedValue),
+            TaintedType::UntaintedValue,
+        ],
         std::iter::once((Name::from(5), TaintedType::TaintedValue)).collect(),
     );
-    assert_eq!(taintmap.get(&Name::from(6)), Some(&TaintedType::TaintedValue));
+    assert_eq!(
+        taintmap.get(&Name::from(6)),
+        Some(&TaintedType::TaintedValue)
+    );
 }
