@@ -689,10 +689,13 @@ fn _get_element_ptr<'a, 'b, I: Index + 'b>(
     parent_ptr: &'a TaintedType,
     mut indices: std::iter::Peekable<impl Iterator<Item = &'b I>>,
 ) -> Result<TaintedType, String> {
-    let index = match indices.next() {
+    // we 'pop' an index from the list. This represents choosing an element of
+    // the "array" pointed to by the pointer.
+    let _index = match indices.next() {
         Some(index) => index,
         None => return Err("get_element_ptr: called with no indices".into()),
     };
+    // now the rest of this is just for dealing with subsequent indices
     match parent_ptr {
         TaintedType::UntaintedValue => {
             Err("get_element_ptr: address is not a pointer, or too many indices".into())
@@ -733,24 +736,37 @@ fn _get_element_ptr<'a, 'b, I: Index + 'b>(
                     }
                 },
                 TaintedType::Struct(elements) => {
-                    let index = index
-                        .as_constant()
-                        .expect("get_element_ptr: indexing into a struct at non-Constant index");
-                    let pointee = elements.get(index as usize).ok_or_else(|| {
-                        format!(
-                            "get_element_ptr: index out of range: index {:?} in struct {:?}",
-                            index, pointee
-                        )
-                    })?;
-                    match indices.peek() {
+                    match indices.next() {
                         None => {
-                            if parent_ptr.is_tainted() {
-                                Ok(TaintedType::TaintedPointer(pointee.clone()))
-                            } else {
-                                Ok(TaintedType::UntaintedPointer(pointee.clone()))
+                            // this case is like the TaintedValue / UntaintedValue
+                            // case. The return type is a pointer-to-struct, we
+                            // just picked a particular struct from an array of
+                            // structs.
+                            Ok(parent_ptr.clone())
+                        },
+                        Some(index) => {
+                            // in this case, the new `index` is actually selecting an
+                            // element within the struct
+                            let index = index
+                                .as_constant()
+                                .expect("get_element_ptr: indexing into a struct at non-Constant index");
+                            let pointee = elements.get(index as usize).ok_or_else(|| {
+                                format!(
+                                    "get_element_ptr: index out of range: index {:?} in struct {:?}",
+                                    index, pointee
+                                )
+                            })?;
+                            match indices.peek() {
+                                None => {
+                                    if parent_ptr.is_tainted() {
+                                        Ok(TaintedType::TaintedPointer(pointee.clone()))
+                                    } else {
+                                        Ok(TaintedType::UntaintedPointer(pointee.clone()))
+                                    }
+                                },
+                                Some(_) => _get_element_ptr(&pointee.borrow(), indices),
                             }
                         },
-                        Some(_) => _get_element_ptr(&pointee.borrow(), indices),
                     }
                 },
             }
