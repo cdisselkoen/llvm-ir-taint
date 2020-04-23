@@ -747,9 +747,9 @@ fn _get_element_ptr<'a, 'b, I: Index + 'b>(
                         Some(index) => {
                             // in this case, the new `index` is actually selecting an
                             // element within the struct
-                            let index = index
-                                .as_constant()
-                                .expect("get_element_ptr: indexing into a struct at non-Constant index");
+                            let index = index.as_constant().expect(
+                                "get_element_ptr: indexing into a struct at non-Constant index",
+                            );
                             let pointee = elements.get(index as usize).ok_or_else(|| {
                                 format!(
                                     "get_element_ptr: index out of range: index {:?} in struct {:?}",
