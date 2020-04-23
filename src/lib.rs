@@ -117,6 +117,18 @@ impl TaintedType {
             Type::StructType { element_types, .. } => {
                 TaintedType::struct_of(element_types.iter().map(TaintedType::from_llvm_type))
             },
+            Type::NamedStructType { name, ty } => match ty {
+                None => panic!(
+                    "TaintedType::from_llvm_type on an opaque struct named {:?}",
+                    name
+                ),
+                Some(ty) => TaintedType::from_llvm_type(
+                    &ty.upgrade()
+                        .expect("Failed to upgrade weak reference")
+                        .read()
+                        .unwrap(),
+                ),
+            },
             Type::X86_MMXType => TaintedType::UntaintedValue,
             Type::MetadataType => TaintedType::UntaintedValue,
             _ => unimplemented!("TaintedType::from_llvm_type on {:?}", llvm_ty),
@@ -160,7 +172,22 @@ impl TaintedType {
             TaintedType::TaintedValue => true,
             TaintedType::UntaintedPointer(_) => false,
             TaintedType::TaintedPointer(_) => true,
-            TaintedType::Struct(_) => panic!("is_tainted on a struct"),
+            TaintedType::Struct(elements) => {
+                // a struct is tainted if any of its elements are
+                elements.iter().any(|e| e.borrow().is_tainted())
+            },
+        }
+    }
+
+    fn to_tainted(&self) -> Self {
+        match self {
+            TaintedType::UntaintedValue => TaintedType::TaintedValue,
+            TaintedType::TaintedValue => TaintedType::TaintedValue,
+            TaintedType::UntaintedPointer(rc) => TaintedType::TaintedPointer(rc.clone()),
+            TaintedType::TaintedPointer(rc) => TaintedType::TaintedPointer(rc.clone()),
+            TaintedType::Struct(elements) => {
+                TaintedType::struct_of(elements.iter().map(|e| e.borrow().to_tainted()))
+            },
         }
     }
 
@@ -292,6 +319,35 @@ impl TaintState {
         }
     }
 
+    /// Update the given pointee to the given `TaintedType`.
+    /// This performs a `join` just like `update_var_taintedtype`.
+    /// `pointee` should be the `Rc` from inside a
+    /// `TaintedType::UntaintedPointer` or `TaintedType::TaintedPointer`.
+    ///
+    /// Returns `true` if the pointee's `TaintedType` changed, accounting for the
+    /// join operation.
+    fn update_pointee_taintedtype(
+        &self,
+        pointee: &Rc<RefCell<TaintedType>>,
+        new_pointee: TaintedType,
+    ) -> bool {
+        let mut pointee = pointee.borrow_mut();
+        let joined_pointee_type = new_pointee.join(&pointee);
+        if &*pointee == &joined_pointee_type {
+            // no change is necessary
+            false
+        } else {
+            // update the address type.
+            // Using `rc.replace()` ensures that other pointers to the same type will
+            // automatically be updated as well. For instance, if we have a pointer to
+            // an array, then GEP to get pointer to 3rd element, then store a tainted
+            // value to that 3rd element, we want to update _both pointers_ (the original
+            // array pointer, and the element pointer) to have type pointer-to-tainted.
+            *pointee = joined_pointee_type;
+            true
+        }
+    }
+
     /// process the given `Instruction`, updating the `TaintState` if appropriate.
     ///
     /// Returns `true` if a change was made to the `TaintState`, or `false` if not.
@@ -304,9 +360,8 @@ impl TaintState {
             self.update_var_taintedtype(bop.get_result().clone(), result_ty)
         } else {
             match inst {
-                // the unary ops which have scalar input and scalar output
+                // the unary ops which output the same type they input, in our type system
                 Instruction::AddrSpaceCast(_)
-                | Instruction::BitCast(_)
                 | Instruction::FNeg(_)
                 | Instruction::FPExt(_)
                 | Instruction::FPToSI(_)
@@ -320,6 +375,45 @@ impl TaintState {
                     let uop: groups::UnaryOp = inst.clone().try_into().unwrap();
                     let op_ty = self.get_type_of_operand(uop.get_operand());
                     self.update_var_taintedtype(uop.get_result().clone(), op_ty)
+                },
+                Instruction::BitCast(bc) => {
+                    let from_ty = self.get_type_of_operand(&bc.operand);
+                    let result_ty = match from_ty {
+                        TaintedType::UntaintedValue => TaintedType::from_llvm_type(&bc.to_type),
+                        TaintedType::TaintedValue => {
+                            TaintedType::from_llvm_type(&bc.to_type).to_tainted()
+                        },
+                        TaintedType::UntaintedPointer(rc) => match &bc.to_type {
+                            Type::PointerType { pointee_type, .. } => {
+                                let result_pointee_type = if rc.borrow().is_tainted() {
+                                    TaintedType::from_llvm_type(&**pointee_type).to_tainted()
+                                } else {
+                                    TaintedType::from_llvm_type(&**pointee_type)
+                                };
+                                TaintedType::untainted_ptr_to(result_pointee_type)
+                            },
+                            _ => panic!("Bitcast from pointer to non-pointer"), // my reading of the LLVM 9 LangRef disallows this
+                        },
+                        TaintedType::TaintedPointer(rc) => match &bc.to_type {
+                            Type::PointerType { pointee_type, .. } => {
+                                let result_pointee_type = if rc.borrow().is_tainted() {
+                                    TaintedType::from_llvm_type(&**pointee_type).to_tainted()
+                                } else {
+                                    TaintedType::from_llvm_type(&**pointee_type)
+                                };
+                                TaintedType::tainted_ptr_to(result_pointee_type)
+                            },
+                            _ => panic!("Bitcast from pointer to non-pointer"), // my reading of the LLVM 9 LangRef disallows this
+                        },
+                        from_ty @ TaintedType::Struct(_) => {
+                            if from_ty.is_tainted() {
+                                TaintedType::from_llvm_type(&bc.to_type).to_tainted()
+                            } else {
+                                TaintedType::from_llvm_type(&bc.to_type)
+                            }
+                        },
+                    };
+                    self.update_var_taintedtype(bc.get_result().clone(), result_ty)
                 },
                 Instruction::ExtractElement(ee) => {
                     let result_ty = if self.is_scalar_operand_tainted(&ee.index) {
@@ -406,26 +500,12 @@ impl TaintState {
                             panic!("Store: address is not a pointer: {:?}", &store.address)
                         },
                         TaintedType::UntaintedPointer(rc) | TaintedType::TaintedPointer(rc) => {
-                            // update the store address's type based on the value being stored through it
-                            let new_value_type = self.get_type_of_operand(&store.value);
-                            // update the pointee in the store's address type;
+                            // update the store address's type based on the value being stored through it.
+                            // specifically, update the pointee in that address type:
                             // e.g., if we're storing a tainted value, we want
                             // to update the address type to "pointer to tainted"
-                            let mut value_type = rc.borrow_mut();
-                            let joined_value_type = new_value_type.join(&value_type);
-                            if &*value_type == &joined_value_type {
-                                // no change is necessary
-                                false
-                            } else {
-                                // update the address type.
-                                // Using `rc.replace()` ensures that other pointers to the same type will
-                                // automatically be updated as well. For instance, if we have a pointer to
-                                // an array, then GEP to get pointer to 3rd element, then store a tainted
-                                // value to that 3rd element, we want to update _both pointers_ (the original
-                                // array pointer, and the element pointer) to have type pointer-to-tainted.
-                                *value_type = joined_value_type;
-                                true
-                            }
+                            let new_value_type = self.get_type_of_operand(&store.value);
+                            self.update_pointee_taintedtype(&rc, new_value_type)
                         },
                     }
                 },
@@ -501,6 +581,17 @@ impl TaintState {
                                 || name.starts_with("llvm.dbg")
                             {
                                 false // these are all safe to ignore
+                            } else if name.starts_with("llvm.memset") {
+                                // update the address type as appropriate, just like for Store
+                                let address_operand = call.arguments.get(0).map(|(op, _)| op).unwrap_or_else(|| panic!("Expected llvm.memset to have at least three arguments, but it has {}", call.arguments.len()));
+                                let value_operand = call.arguments.get(1).map(|(op, _)| op).unwrap_or_else(|| panic!("Expected llvm.memset to have at least three arguments, but it has {}", call.arguments.len()));
+                                let address_ty = self.get_type_of_operand(address_operand);
+                                let value_ty = self.get_type_of_operand(value_operand);
+                                let pointee_ty = match address_ty {
+                                    TaintedType::UntaintedPointer(rc) | TaintedType::TaintedPointer(rc) => rc,
+                                    _ => panic!("llvm.memset: expected first argument to be a pointer, but it was {:?}", address_ty),
+                                };
+                                self.update_pointee_taintedtype(&pointee_ty, value_ty)
                             } else {
                                 unimplemented!("Call of a function named {}", name)
                             }
