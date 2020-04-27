@@ -3,26 +3,46 @@ use llvm_ir::instruction::{groups, BinaryOp, HasResult, UnaryOp};
 use llvm_ir::*;
 use std::cell::RefCell;
 use std::collections::hash_map::Entry;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::convert::TryInto;
 use std::fmt::Debug;
 use std::rc::Rc;
 
-/// The main function in this module. Given an LLVM function, returns a map from
-/// variable `Name` to the `TaintedType` of that variable.
+/// The main function in this module. Given an LLVM module and the name of a
+/// function to analyze, returns a `ModuleTaintState` with data on that function
+/// and all functions it calls, directly or transitively.
 ///
-/// `args`: the `TaintedType` to assign to each function argument. This should be
-/// a vector of the same length as `f.parameters`.
+/// `args`: the `TaintedType` to assign to each function argument.
 ///
 /// `nonargs`: (optional) Initial `TaintedType`s for any nonargument variables in
 /// the function. For instance, you can use this to set some variable in the
 /// middle of the function to tainted. If this map is empty, all `TaintedType`s
 /// will simply be inferred normally from the argument `TaintedType`s.
 pub fn get_taint_map_for_function(
-    f: &Function,
+    module: &Module,
+    fn_name: &str,
     args: Vec<TaintedType>,
     nonargs: HashMap<Name, TaintedType>,
 ) -> HashMap<Name, TaintedType> {
+    let mts = get_taint_maps_for_function(module, fn_name, args, nonargs);
+    mts.get_function_taint_map(fn_name)
+}
+
+/// Like `get_taint_map_for_function`, but returns a `ModuleTaintState`
+/// containing info on that function and all functions it calls, directly or
+/// transitively.
+pub fn get_taint_maps_for_function<'m>(
+    module: &'m Module,
+    fn_name: &str,
+    args: Vec<TaintedType>,
+    nonargs: HashMap<Name, TaintedType>,
+) -> ModuleTaintState<'m> {
+    let f = module.get_func_by_name(fn_name).unwrap_or_else(|| {
+        panic!(
+            "Failed to find function named {:?} in the given module",
+            fn_name
+        )
+    });
     assert_eq!(args.len(), f.parameters.len());
     let mut initial_taintmap = nonargs;
     for (name, ty) in f
@@ -33,31 +53,7 @@ pub fn get_taint_map_for_function(
     {
         initial_taintmap.insert(name, ty);
     }
-    let mut taintstate = TaintState::from_taint_map(initial_taintmap);
-    let mut changed = true;
-    // We use a simple fixpoint algorithm where we simply do a pass over all
-    // instructions in the function, and if anything changed, do another pass,
-    // until fixpoint. More sophisticated would be a worklist approach, but that
-    // would require having dependency information so that we know what things
-    // to put on the worklist when a given variable's taint changes.
-    //
-    // In either case, this is guaranteed to converge because we only ever
-    // change things from untainted to tainted. In the limit, everything becomes
-    // tainted, and then nothing can change so the algorithm must terminate.
-    while changed {
-        changed = false;
-        for bb in &f.basic_blocks {
-            for inst in &bb.instrs {
-                changed |= taintstate.process_instruction(inst).unwrap_or_else(|e| {
-                    panic!(
-                        "Encountered this error:\n  {}\nwhile processing this instruction:\n  {:?}",
-                        e, inst
-                    )
-                });
-            }
-        }
-    }
-    return taintstate.into_taint_map();
+    ModuleTaintState::do_analysis(module, &f.name, initial_taintmap)
 }
 
 /// The type system which we use for this analysis
@@ -244,12 +240,13 @@ impl TaintedType {
     }
 }
 
-struct TaintState {
+#[derive(Clone)]
+struct FunctionTaintState {
     /// Map from `Name`s of variables to their (currently believed) types.
     map: HashMap<Name, TaintedType>,
 }
 
-impl TaintState {
+impl FunctionTaintState {
     fn from_taint_map(taintmap: HashMap<Name, TaintedType>) -> Self {
         Self { map: taintmap }
     }
@@ -349,7 +346,7 @@ impl TaintState {
             Ok(false)
         } else {
             // update the address type.
-            // Using `rc.replace()` ensures that other pointers to the same type will
+            // Storing to the `Rc` ensures that other pointers to the same type will
             // automatically be updated as well. For instance, if we have a pointer to
             // an array, then GEP to get pointer to 3rd element, then store a tainted
             // value to that 3rd element, we want to update _both pointers_ (the original
@@ -358,17 +355,283 @@ impl TaintState {
             Ok(true)
         }
     }
+}
 
-    /// process the given `Instruction`, updating the `TaintState` if appropriate.
+pub struct ModuleTaintState<'m> {
+    /// llvm-ir `Module`
+    module: &'m Module,
+
+    /// Map from function name to the `FunctionTaintState` for that function
+    fn_taint_states: HashMap<String, FunctionTaintState>,
+
+    /// Map from function name to the `FunctionSummary` for that function
+    fn_summaries: HashMap<String, FunctionSummary>,
+
+    /// Map from function name to the names of its callers.
+    /// Whenever a function summary changes, we add its callers to the worklist
+    /// because the new summary could affect inferred types in its callers.
+    callers: HashMap<String, HashSet<&'m str>>,
+
+    /// Set of functions which need to be processed again because there's been a
+    /// change to taint information which might be relevant to them
+    fn_worklist: HashSet<&'m str>,
+
+    /// Name of the function currently being processed
+    cur_fn: &'m str,
+}
+
+struct FunctionSummary {
+    /// `TaintedType`s of the function parameters
+    params: Vec<TaintedType>,
+
+    /// `TaintedType` of the return type, or `None` for void return type
+    ret: Option<TaintedType>,
+}
+
+impl FunctionSummary {
+    fn new_untainted(
+        param_llvm_types: impl IntoIterator<Item = Type>,
+        ret_llvm_type: &Type,
+    ) -> Self {
+        Self {
+            params: param_llvm_types
+                .into_iter()
+                .map(|ty| TaintedType::from_llvm_type(&ty))
+                .collect(),
+            ret: match ret_llvm_type {
+                Type::VoidType => None,
+                ty => Some(TaintedType::from_llvm_type(ty)),
+            },
+        }
+    }
+
+    /// Update the `TaintedType`s of the function parameters.
+    /// Performs a `join` of each type with the corresponding existing type.
     ///
-    /// Returns `true` if a change was made to the `TaintState`, or `false` if not.
+    /// Returns `true` if a change was made to the `FunctionSummary`.
+    fn update_params(&mut self, new_params: Vec<TaintedType>) -> Result<bool, String> {
+        if new_params.len() != self.params.len() {
+            Err(format!(
+                "trying to update function from {} parameter(s) to {} parameter(s)",
+                self.params.len(),
+                new_params.len(),
+            ))
+        } else {
+            let mut retval = false;
+            for (param, new_param) in self.params.iter_mut().zip(new_params.into_iter()) {
+                let joined = param.join(&new_param)?;
+                if param != &joined {
+                    retval = true;
+                    *param = joined;
+                }
+            }
+            Ok(retval)
+        }
+    }
+
+    /// Update the `TaintedType` representing the function return type.
+    /// Performs a `join` of the given type and the existing return type.
+    ///
+    /// Returns `true` if a change was made to the `FunctionSummary`.
+    fn update_ret(&mut self, new_ret: &Option<&TaintedType>) -> Result<bool, String> {
+        match new_ret {
+            None => match &self.ret {
+                Some(ret) => Err(format!("update_ret: trying to update function from non-void to void. Old return type: {:?}", ret)),
+                None => Ok(false),
+            },
+            Some(new_ret) => {
+                let current_ret = self.ret.as_mut().unwrap_or_else(|| panic!("update_ret: trying to update function from void to this non-void type: {:?}", new_ret));
+                let joined = new_ret.join(current_ret)?;
+                if current_ret == &joined {
+                    Ok(false)
+                } else {
+                    *current_ret = joined;
+                    Ok(true)
+                }
+            },
+        }
+    }
+}
+
+impl<'m> ModuleTaintState<'m> {
+    /// Compute the tainted state of all variables using our fixpoint algorithm,
+    /// and return the resulting `ModuleTaintState`.
+    ///
+    /// `start_fn`: name of the function to start the analysis in
+    ///
+    /// `start_fn_taint_map`: Map from variable names (in `start_fn`) to the
+    /// initial `TaintedType`s of those variables. Must include types for the
+    /// function parameters; may optionally include types for other variables in
+    /// the function.
+    fn do_analysis(
+        module: &'m Module,
+        start_fn: &'m str,
+        start_fn_taint_map: HashMap<Name, TaintedType>,
+    ) -> Self {
+        let mut mts = Self::new(module, start_fn, start_fn_taint_map);
+        mts.compute();
+        mts
+    }
+
+    fn new(
+        module: &'m Module,
+        start_fn: &'m str,
+        start_fn_taint_map: HashMap<Name, TaintedType>,
+    ) -> Self {
+        Self {
+            module,
+            fn_taint_states: std::iter::once((
+                start_fn.into(),
+                FunctionTaintState::from_taint_map(start_fn_taint_map),
+            ))
+            .collect(),
+            fn_summaries: HashMap::new(),
+            callers: HashMap::new(),
+            fn_worklist: std::iter::once(start_fn).collect(),
+            cur_fn: start_fn,
+        }
+    }
+
+    /// Given a function name, returns a map from variable name to `TaintedType`
+    /// for all the variables in that function.
+    pub fn get_function_taint_map(&self, fn_name: &str) -> HashMap<Name, TaintedType> {
+        self.fn_taint_states
+            .get(fn_name)
+            .cloned()
+            .unwrap_or_else(|| {
+                panic!(
+                    "get_function_taint_map: no taint map found for function {:?}",
+                    fn_name
+                )
+            })
+            .into_taint_map()
+    }
+
+    /// Run the fixpoint algorithm to completion.
+    fn compute(&mut self) {
+        // We use a worklist fixpoint algorithm where `self.fn_worklist` contains
+        // names of functions which need another pass because of changes made to
+        // the `TaintedType` of variables that may affect that function's analysis.
+        //
+        // Within a function, we simply do a pass over all instructions in the
+        // function. More sophisticated would be an instruction-level worklist
+        // approach, but that would require having instruction dependency
+        // information so that we know what things to put on the worklist when a
+        // given variable's taint changes.
+        //
+        // In either case, this is guaranteed to converge because we only ever
+        // change things from untainted to tainted. In the limit, everything becomes
+        // tainted, and then nothing can change so the algorithm must terminate.
+        while !self.fn_worklist.is_empty() {
+            let fn_name = self.pop_from_worklist();
+            let func = self.module.get_func_by_name(fn_name).unwrap_or_else(|| {
+                panic!(
+                    "Function name {:?} found in worklist but not found in module",
+                    fn_name
+                )
+            });
+            let changed = self.process_function(func).unwrap_or_else(|e| {
+                panic!("In function {:?}: {}", fn_name, e)
+            });
+            if changed {
+                self.fn_worklist.insert(fn_name);
+            }
+        }
+    }
+
+    fn pop_from_worklist(&mut self) -> &'m str {
+        let fn_name: &'m str = self
+            .fn_worklist
+            .iter()
+            .next()
+            .expect("pop_from_worklist: empty worklist")
+            .clone();
+        self.fn_worklist.remove(fn_name);
+        fn_name
+    }
+
+    fn get_cur_fn<'a>(&'a mut self) -> &'a mut FunctionTaintState {
+        let cur_fn_name: &str = &self.cur_fn;
+        self.fn_taint_states
+            .get_mut(cur_fn_name.into())
+            .unwrap_or_else(|| {
+                panic!(
+                    "get_cur_fn: no taint state found for function {:?}",
+                    cur_fn_name
+                )
+            })
+    }
+
+    /// Process the given `Function`.
+    ///
+    /// Returns `true` if a change was made to the function's taint state, or `false` if not.
+    fn process_function(&mut self, f: &'m Function) -> Result<bool, String> {
+        self.cur_fn = &f.name;
+
+        // get the taint state for the current function, creating a new one if necessary
+        let cur_fn = self.fn_taint_states.entry(f.name.clone()).or_insert_with(|| {
+            FunctionTaintState::from_taint_map(
+            f.parameters.iter().map(|p| (p.name.clone(), TaintedType::from_llvm_type(&p.get_type()))).collect()
+            )
+        });
+
+        let summary = match self.fn_summaries.entry(f.name.clone()) {
+            Entry::Vacant(ventry) => {
+                // no summary: make a starter one, assuming everything is untainted
+                let param_llvm_types = f.parameters.iter().map(|p| p.get_type());
+                let ret_llvm_type = &f.return_type;
+                ventry.insert(FunctionSummary::new_untainted(param_llvm_types, ret_llvm_type))
+            },
+            Entry::Occupied(oentry) => oentry.into_mut(),
+        };
+        // update the function parameter types from the current summary
+        assert_eq!(f.parameters.len(), summary.params.len());
+        for (param, param_ty) in f.parameters.iter().zip(summary.params.iter()) {
+            let _: bool = cur_fn.update_var_taintedtype(param.name.clone(), param_ty.clone()).map_err(|e| {
+                format!("Encountered this error:\n  {}\nwhile processing the parameters for this function:\n  {:?}", e, &f.name)
+            })?;
+            // we throw away the `bool` return value of
+            // `update_var_taintedtype` here: we don't care if this was
+            // a change. If this was the only change from this pass,
+            // there's no need to re-add this function to the worklist.
+            // If a change here causes any change to the status of
+            // non-parameter variables, that will result in returning
+            // `true` below.
+        }
+
+        // now do a pass over the function to propagate taints
+        let mut changed = false;
+        for bb in &f.basic_blocks {
+            for inst in &bb.instrs {
+                changed |= self.process_instruction(inst).map_err(|e| {
+                    format!(
+                        "Encountered this error:\n  {}\nwhile processing this instruction:\n  {:?}",
+                        e, inst
+                    )
+                })?;
+            }
+            changed |= self.process_terminator(&bb.term).map_err(|e| {
+                format!(
+                    "Encountered this error:\n  {}\nwhile processing this terminator:\n  {:?}",
+                    e, &bb.term
+                )
+            })?;
+        }
+        Ok(changed)
+    }
+
+    /// Process the given `Instruction`, updating the current function's
+    /// `FunctionTaintState` if appropriate.
+    ///
+    /// Returns `true` if a change was made to the `FunctionTaintState`, or `false` if not.
     fn process_instruction(&mut self, inst: &Instruction) -> Result<bool, String> {
         if inst.is_binary_op() {
+            let cur_fn = self.get_cur_fn();
             let bop: groups::BinaryOp = inst.clone().try_into().unwrap();
-            let op0_ty = self.get_type_of_operand(bop.get_operand0())?;
-            let op1_ty = self.get_type_of_operand(bop.get_operand1())?;
+            let op0_ty = cur_fn.get_type_of_operand(bop.get_operand0())?;
+            let op1_ty = cur_fn.get_type_of_operand(bop.get_operand1())?;
             let result_ty = op0_ty.join(&op1_ty)?;
-            self.update_var_taintedtype(bop.get_result().clone(), result_ty)
+            cur_fn.update_var_taintedtype(bop.get_result().clone(), result_ty)
         } else {
             match inst {
                 // the unary ops which output the same type they input, in our type system
@@ -383,12 +646,14 @@ impl TaintState {
                 | Instruction::Trunc(_)
                 | Instruction::UIToFP(_)
                 | Instruction::ZExt(_) => {
+                    let cur_fn = self.get_cur_fn();
                     let uop: groups::UnaryOp = inst.clone().try_into().unwrap();
-                    let op_ty = self.get_type_of_operand(uop.get_operand())?;
-                    self.update_var_taintedtype(uop.get_result().clone(), op_ty)
+                    let op_ty = cur_fn.get_type_of_operand(uop.get_operand())?;
+                    cur_fn.update_var_taintedtype(uop.get_result().clone(), op_ty)
                 },
                 Instruction::BitCast(bc) => {
-                    let from_ty = self.get_type_of_operand(&bc.operand)?;
+                    let cur_fn = self.get_cur_fn();
+                    let from_ty = cur_fn.get_type_of_operand(&bc.operand)?;
                     let result_ty = match from_ty {
                         TaintedType::UntaintedValue => TaintedType::from_llvm_type(&bc.to_type),
                         TaintedType::TaintedValue => {
@@ -424,65 +689,72 @@ impl TaintState {
                             }
                         },
                     };
-                    self.update_var_taintedtype(bc.get_result().clone(), result_ty)
+                    cur_fn.update_var_taintedtype(bc.get_result().clone(), result_ty)
                 },
                 Instruction::ExtractElement(ee) => {
-                    let result_ty = if self.is_scalar_operand_tainted(&ee.index)? {
+                    let cur_fn = self.get_cur_fn();
+                    let result_ty = if cur_fn.is_scalar_operand_tainted(&ee.index)? {
                         TaintedType::TaintedValue
                     } else {
-                        self.get_type_of_operand(&ee.vector)? // in our type system, the type of a vector and the type of one of its elements are the same
+                        cur_fn.get_type_of_operand(&ee.vector)? // in our type system, the type of a vector and the type of one of its elements are the same
                     };
-                    self.update_var_taintedtype(ee.get_result().clone(), result_ty)
+                    cur_fn.update_var_taintedtype(ee.get_result().clone(), result_ty)
                 },
                 Instruction::InsertElement(ie) => {
-                    let result_ty = if self.is_scalar_operand_tainted(&ie.index)?
-                        || self.is_scalar_operand_tainted(&ie.element)?
+                    let cur_fn = self.get_cur_fn();
+                    let result_ty = if cur_fn.is_scalar_operand_tainted(&ie.index)?
+                        || cur_fn.is_scalar_operand_tainted(&ie.element)?
                     {
                         TaintedType::TaintedValue
                     } else {
-                        self.get_type_of_operand(&ie.vector)? // in our type system, inserting an untainted element does't change the type of the vector
+                        cur_fn.get_type_of_operand(&ie.vector)? // in our type system, inserting an untainted element does't change the type of the vector
                     };
-                    self.update_var_taintedtype(ie.get_result().clone(), result_ty)
+                    cur_fn.update_var_taintedtype(ie.get_result().clone(), result_ty)
                 },
                 Instruction::ShuffleVector(sv) => {
                     // Vector operands are still scalars in our type system
-                    let op0_ty = self.get_type_of_operand(&sv.operand0)?;
-                    let op1_ty = self.get_type_of_operand(&sv.operand1)?;
+                    let cur_fn = self.get_cur_fn();
+                    let op0_ty = cur_fn.get_type_of_operand(&sv.operand0)?;
+                    let op1_ty = cur_fn.get_type_of_operand(&sv.operand1)?;
                     let result_ty = op0_ty.join(&op1_ty)?;
-                    self.update_var_taintedtype(sv.get_result().clone(), result_ty)
+                    cur_fn.update_var_taintedtype(sv.get_result().clone(), result_ty)
                 },
                 Instruction::ExtractValue(ev) => {
+                    let cur_fn = self.get_cur_fn();
                     let ptr_to_struct =
-                        TaintedType::untainted_ptr_to(self.get_type_of_operand(&ev.aggregate)?);
+                        TaintedType::untainted_ptr_to(cur_fn.get_type_of_operand(&ev.aggregate)?);
                     let element_ptr_ty = get_element_ptr(&ptr_to_struct, &ev.indices)?;
                     let element_ty = match element_ptr_ty {
                         TaintedType::UntaintedPointer(rc) => rc.borrow().clone(),
                         _ => return Err("ExtractValue: expected get_element_ptr to return an UntaintedPointer here".into()),
                     };
-                    self.update_var_taintedtype(ev.get_result().clone(), element_ty)
+                    cur_fn.update_var_taintedtype(ev.get_result().clone(), element_ty)
                 },
                 Instruction::InsertValue(iv) => {
-                    let mut aggregate = self.get_type_of_operand(&iv.aggregate)?;
-                    let element_to_insert = self.get_type_of_operand(&iv.element)?;
+                    let cur_fn = self.get_cur_fn();
+                    let mut aggregate = cur_fn.get_type_of_operand(&iv.aggregate)?;
+                    let element_to_insert = cur_fn.get_type_of_operand(&iv.element)?;
                     insert_value_into_struct(
                         &mut aggregate,
                         iv.indices.iter().copied(),
                         element_to_insert,
                     );
-                    self.update_var_taintedtype(iv.get_result().clone(), aggregate)
+                    cur_fn.update_var_taintedtype(iv.get_result().clone(), aggregate)
                 },
                 Instruction::Alloca(alloca) => {
-                    let result_ty = if self.is_scalar_operand_tainted(&alloca.num_elements)? {
+                    let cur_fn = self.get_cur_fn();
+                    let result_ty = if cur_fn.is_scalar_operand_tainted(&alloca.num_elements)? {
                         TaintedType::TaintedValue
                     } else {
                         TaintedType::untainted_ptr_to(TaintedType::from_llvm_type(
                             &alloca.allocated_type,
                         ))
                     };
-                    self.update_var_taintedtype(alloca.get_result().clone(), result_ty)
+                    cur_fn.update_var_taintedtype(alloca.get_result().clone(), result_ty)
                 },
                 Instruction::Load(load) => {
-                    let result_ty = match self.get_type_of_operand(&load.address)? {
+                    let cur_fn = self.get_cur_fn();
+                    let result_ty = match cur_fn.get_type_of_operand(&load.address)? {
                         TaintedType::UntaintedValue => {
                             return Err(format!(
                                 "Load: address is not a pointer: {:?}",
@@ -506,10 +778,11 @@ impl TaintState {
                         },
                         TaintedType::TaintedPointer(pointee_type) => pointee_type.borrow().clone(), // we allow loading untainted data through a tainted pointer, for this analysis. Caller is welcome to do post-processing to taint every result of a load from a tainted address and then rerun the tainting algorithm.
                     };
-                    self.update_var_taintedtype(load.get_result().clone(), result_ty)
+                    cur_fn.update_var_taintedtype(load.get_result().clone(), result_ty)
                 },
                 Instruction::Store(store) => {
-                    match self.get_type_of_operand(&store.address)? {
+                    let cur_fn = self.get_cur_fn();
+                    match cur_fn.get_type_of_operand(&store.address)? {
                         TaintedType::UntaintedValue => Err(format!(
                             "Store: address is not a pointer: {:?}",
                             &store.address
@@ -527,69 +800,77 @@ impl TaintState {
                             // specifically, update the pointee in that address type:
                             // e.g., if we're storing a tainted value, we want
                             // to update the address type to "pointer to tainted"
-                            let new_value_type = self.get_type_of_operand(&store.value)?;
-                            self.update_pointee_taintedtype(&rc, new_value_type)
+                            let new_value_type = cur_fn.get_type_of_operand(&store.value)?;
+                            cur_fn.update_pointee_taintedtype(&rc, new_value_type)
                         },
                     }
                 },
                 Instruction::Fence(_) => Ok(false),
                 Instruction::GetElementPtr(gep) => {
+                    let cur_fn = self.get_cur_fn();
                     let result_ty =
-                        get_element_ptr(&self.get_type_of_operand(&gep.address)?, &gep.indices)?;
-                    self.update_var_taintedtype(gep.get_result().clone(), result_ty)
+                        get_element_ptr(&cur_fn.get_type_of_operand(&gep.address)?, &gep.indices)?;
+                    cur_fn.update_var_taintedtype(gep.get_result().clone(), result_ty)
                 },
-                Instruction::PtrToInt(pti) => match self.get_type_of_operand(&pti.operand)? {
-                    TaintedType::UntaintedPointer(_) => self.update_var_taintedtype(
-                        pti.get_result().clone(),
-                        TaintedType::UntaintedValue,
-                    ),
-                    TaintedType::TaintedPointer(_) => self.update_var_taintedtype(
-                        pti.get_result().clone(),
-                        TaintedType::TaintedValue,
-                    ),
-                    TaintedType::UntaintedValue => {
-                        Err(format!("PtrToInt on an UntaintedValue: {:?}", &pti.operand))
-                    },
-                    TaintedType::TaintedValue => {
-                        Err(format!("PtrToInt on an TaintedValue: {:?}", &pti.operand))
-                    },
-                    TaintedType::Struct(_) => {
-                        Err(format!("PtrToInt on a struct: {:?}", &pti.operand))
-                    },
+                Instruction::PtrToInt(pti) => {
+                    let cur_fn = self.get_cur_fn();
+                    match cur_fn.get_type_of_operand(&pti.operand)? {
+                        TaintedType::UntaintedPointer(_) => cur_fn.update_var_taintedtype(
+                            pti.get_result().clone(),
+                            TaintedType::UntaintedValue,
+                        ),
+                        TaintedType::TaintedPointer(_) => cur_fn.update_var_taintedtype(
+                            pti.get_result().clone(),
+                            TaintedType::TaintedValue,
+                        ),
+                        TaintedType::UntaintedValue => {
+                            Err(format!("PtrToInt on an UntaintedValue: {:?}", &pti.operand))
+                        },
+                        TaintedType::TaintedValue => {
+                            Err(format!("PtrToInt on an TaintedValue: {:?}", &pti.operand))
+                        },
+                        TaintedType::Struct(_) => {
+                            Err(format!("PtrToInt on a struct: {:?}", &pti.operand))
+                        },
+                    }
                 },
                 Instruction::ICmp(icmp) => {
-                    let op0_ty = self.get_type_of_operand(&icmp.operand0)?;
-                    let op1_ty = self.get_type_of_operand(&icmp.operand1)?;
+                    let cur_fn = self.get_cur_fn();
+                    let op0_ty = cur_fn.get_type_of_operand(&icmp.operand0)?;
+                    let op1_ty = cur_fn.get_type_of_operand(&icmp.operand1)?;
                     let result_ty = op0_ty.join(&op1_ty)?;
-                    self.update_var_taintedtype(icmp.get_result().clone(), result_ty)
+                    cur_fn.update_var_taintedtype(icmp.get_result().clone(), result_ty)
                 },
                 Instruction::FCmp(fcmp) => {
-                    let op0_ty = self.get_type_of_operand(&fcmp.operand0)?;
-                    let op1_ty = self.get_type_of_operand(&fcmp.operand1)?;
+                    let cur_fn = self.get_cur_fn();
+                    let op0_ty = cur_fn.get_type_of_operand(&fcmp.operand0)?;
+                    let op1_ty = cur_fn.get_type_of_operand(&fcmp.operand1)?;
                     let result_ty = op0_ty.join(&op1_ty)?;
-                    self.update_var_taintedtype(fcmp.get_result().clone(), result_ty)
+                    cur_fn.update_var_taintedtype(fcmp.get_result().clone(), result_ty)
                 },
                 Instruction::Phi(phi) => {
+                    let cur_fn = self.get_cur_fn();
                     let mut incoming_types = phi
                         .incoming_values
                         .iter()
-                        .map(|(op, _)| self.get_type_of_operand_fallible(op))
+                        .map(|(op, _)| cur_fn.get_type_of_operand_fallible(op))
                         .map(|ty| ty.unwrap_or(TaintedType::from_llvm_type(&phi.to_type))); // In the case that one of the possible incoming values isn't defined yet, we'll just assume an appropriate untainted value, and continue. If it's actually tainted, that will be corrected on a future pass. (And we'll definitely have a future pass, because that variable becoming defined counts as a change for the fixpoint algorithm.)
                     let mut result_ty = incoming_types.next().expect("Phi with no incoming values");
                     for ty in incoming_types {
                         result_ty = result_ty.join(&ty)?;
                     }
-                    self.update_var_taintedtype(phi.get_result().clone(), result_ty)
+                    cur_fn.update_var_taintedtype(phi.get_result().clone(), result_ty)
                 },
                 Instruction::Select(select) => {
-                    let result_ty = if self.is_scalar_operand_tainted(&select.condition)? {
+                    let cur_fn = self.get_cur_fn();
+                    let result_ty = if cur_fn.is_scalar_operand_tainted(&select.condition)? {
                         TaintedType::TaintedValue
                     } else {
-                        let true_ty = self.get_type_of_operand(&select.true_value)?;
-                        let false_ty = self.get_type_of_operand(&select.false_value)?;
+                        let true_ty = cur_fn.get_type_of_operand(&select.true_value)?;
+                        let false_ty = cur_fn.get_type_of_operand(&select.false_value)?;
                         true_ty.join(&false_ty)?
                     };
-                    self.update_var_taintedtype(select.get_result().clone(), result_ty)
+                    cur_fn.update_var_taintedtype(select.get_result().clone(), result_ty)
                 },
                 Instruction::Call(call) => {
                     match &call.function {
@@ -606,17 +887,24 @@ impl TaintState {
                                 Ok(false) // these are all safe to ignore
                             } else if name.starts_with("llvm.memset") {
                                 // update the address type as appropriate, just like for Store
+                                let cur_fn = self.get_cur_fn();
                                 let address_operand = call.arguments.get(0).map(|(op, _)| op).ok_or_else(|| format!("Expected llvm.memset to have at least three arguments, but it has {}", call.arguments.len()))?;
                                 let value_operand = call.arguments.get(1).map(|(op, _)| op).ok_or_else(|| format!("Expected llvm.memset to have at least three arguments, but it has {}", call.arguments.len()))?;
-                                let address_ty = self.get_type_of_operand(address_operand)?;
-                                let value_ty = self.get_type_of_operand(value_operand)?;
+                                let address_ty = cur_fn.get_type_of_operand(address_operand)?;
+                                let value_ty = cur_fn.get_type_of_operand(value_operand)?;
                                 let pointee_ty = match address_ty {
                                     TaintedType::UntaintedPointer(rc) | TaintedType::TaintedPointer(rc) => rc,
                                     _ => return Err(format!("llvm.memset: expected first argument to be a pointer, but it was {:?}", address_ty)),
                                 };
-                                self.update_pointee_taintedtype(&pointee_ty, value_ty)
+                                cur_fn.update_pointee_taintedtype(&pointee_ty, value_ty)
                             } else {
-                                unimplemented!("Call of a function named {}", name)
+                                match self.module.get_func_by_name(name) {
+                                    Some(func) => self.process_function_call(call, func),
+                                    None => panic!(
+                                        "Call of a function named {:?} not found in the module",
+                                        name
+                                    ),
+                                }
                             }
                         },
                         Either::Right(Operand::ConstantOperand(Constant::GlobalReference {
@@ -631,6 +919,110 @@ impl TaintState {
                 },
                 _ => unimplemented!("instruction {:?}", inst),
             }
+        }
+    }
+
+    /// Process a call of the given `Function`.
+    fn process_function_call(
+        &mut self,
+        call: &instruction::Call,
+        func: &'m Function,
+    ) -> Result<bool, String> {
+        // mark this function as a caller of the called function.
+        // This ensures that if the summary of the called function is ever updated,
+        // the current function will be put back on the worklist.
+        let callers = self.callers.entry(func.name.clone()).or_default();
+        callers.insert(&self.cur_fn);
+        // use the `TaintedType`s of the provided arguments to update the
+        // `TaintedType`s of the parameters in the function summary, if appropriate
+        let summary = match self.fn_summaries.entry(func.name.clone()) {
+            Entry::Occupied(oentry) => oentry.into_mut(),
+            Entry::Vacant(ventry) => {
+                // no summary: start with the default one (nothing tainted) and add the
+                // called function to the worklist so that we can compute a better one
+                self.fn_worklist.insert(&func.name);
+                ventry.insert(FunctionSummary::new_untainted(
+                    call.arguments.iter().map(|(arg, _)| arg.get_type()),
+                    &call.get_type(),
+                ))
+            },
+        };
+        let cur_fn = {
+            // have to inline self.get_cur_fn() here to convince the borrow checker
+            // that we only need to borrow self.fn_taint_states and not all of self,
+            // so the concurrent (mutable) borrow of self.fn_summaries is OK.
+            let cur_fn_name: &str = self.cur_fn.clone();
+            self.fn_taint_states
+                .get(cur_fn_name)
+                .unwrap_or_else(|| panic!("no taint state found for function {:?}", cur_fn_name,))
+        };
+        let arg_types = call
+            .arguments
+            .iter()
+            .map(|(arg, _)| cur_fn.get_type_of_operand(arg))
+            .collect::<Result<Vec<_>, _>>()?;
+        if summary.update_params(arg_types)? {
+            // summary changed: put all callers of the called function on the worklist
+            for caller in self.callers.get(&func.name).unwrap().iter() {
+                self.fn_worklist.insert(caller);
+            }
+            // and also put the called function itself on the worklist
+            self.fn_worklist.insert(&func.name);
+        }
+        // and finally, for non-void calls, use the return type in the summary to
+        // update the type of the result in this function
+        let summary_ret_ty = summary.ret.clone(); // this should end the life of `summary` and therefore its mutable borrow of `self.fn_summaries`
+        let cur_fn = self.get_cur_fn();
+        match &call.dest {
+            Some(varname) => {
+                cur_fn.update_var_taintedtype(varname.clone(), summary_ret_ty.unwrap())
+            },
+            None => Ok(false), // nothing changed in the current function
+        }
+    }
+
+    /// Process the given `Terminator`, updating taint states if appropriate.
+    fn process_terminator(&mut self, term: &Terminator) -> Result<bool, String> {
+        match term {
+            Terminator::Ret(ret) => {
+                match self.fn_summaries.get_mut(self.cur_fn) {
+                    None => {
+                        // no summary: no use making one until we know we need one
+                        Ok(false)
+                    },
+                    Some(summary) => {
+                        let cur_fn = {
+                            // have to inline self.get_cur_fn() here to convince the borrow checker
+                            // that we only need to borrow self.fn_taint_states and not all of self,
+                            // so the concurrent (mutable) borrow of self.fn_summaries is OK.
+                            let cur_fn_name: &str = self.cur_fn.clone();
+                            self.fn_taint_states.get(cur_fn_name).unwrap_or_else(|| {
+                                panic!("no taint state found for function {:?}", cur_fn_name,)
+                            })
+                        };
+                        let ty = ret
+                            .return_operand
+                            .as_ref()
+                            .map(|op| cur_fn.get_type_of_operand(op))
+                            .transpose()?;
+                        if summary.update_ret(&ty.as_ref())? {
+                            // summary changed: put all our callers on the worklist
+                            for caller in self.callers.get(self.cur_fn).into_iter().map(|hs| hs.iter()).flatten() {
+                                self.fn_worklist.insert(caller);
+                            }
+                            Ok(true)
+                        } else {
+                            Ok(false)
+                        }
+                    },
+                }
+            },
+            Terminator::Br(_)
+            | Terminator::CondBr(_)
+            | Terminator::Switch(_)
+            | Terminator::IndirectBr(_)
+            | Terminator::Unreachable(_) => Ok(false), // we don't need to do anything for any of these terminators
+            _ => unimplemented!("terminator {:?}", term),
         }
     }
 }

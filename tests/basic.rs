@@ -19,13 +19,11 @@ fn get_memory_module() -> Module {
 fn basic_operation() {
     let funcname = "two_args";
     let module = get_basic_module();
-    let func = module
-        .get_func_by_name(funcname)
-        .unwrap_or_else(|| panic!("Failed to find function named {:?}", funcname));
 
     // with both arguments tainted
     let taintmap = get_taint_map_for_function(
-        func,
+        &module,
+        funcname,
         vec![TaintedType::TaintedValue, TaintedType::TaintedValue],
         HashMap::new(),
     );
@@ -48,7 +46,8 @@ fn basic_operation() {
 
     // with neither argument tainted
     let taintmap = get_taint_map_for_function(
-        func,
+        &module,
+        funcname,
         vec![TaintedType::UntaintedValue, TaintedType::UntaintedValue],
         HashMap::new(),
     );
@@ -71,7 +70,8 @@ fn basic_operation() {
 
     // with just the first argument tainted
     let taintmap = get_taint_map_for_function(
-        func,
+        &module,
+        funcname,
         vec![TaintedType::TaintedValue, TaintedType::UntaintedValue],
         HashMap::new(),
     );
@@ -94,7 +94,8 @@ fn basic_operation() {
 
     // with just the second argument tainted
     let taintmap = get_taint_map_for_function(
-        func,
+        &module,
+        funcname,
         vec![TaintedType::UntaintedValue, TaintedType::TaintedValue],
         HashMap::new(),
     );
@@ -120,13 +121,11 @@ fn basic_operation() {
 fn binops() {
     let funcname = "binops";
     let module = get_basic_module();
-    let func = module
-        .get_func_by_name(funcname)
-        .unwrap_or_else(|| panic!("Failed to find function named {:?}", funcname));
 
     // with both arguments tainted
     let taintmap = get_taint_map_for_function(
-        func,
+        &module,
+        funcname,
         vec![TaintedType::TaintedValue, TaintedType::TaintedValue],
         HashMap::new(),
     );
@@ -185,7 +184,8 @@ fn binops() {
 
     // with neither argument tainted
     let taintmap = get_taint_map_for_function(
-        func,
+        &module,
+        funcname,
         vec![TaintedType::UntaintedValue, TaintedType::UntaintedValue],
         HashMap::new(),
     );
@@ -244,7 +244,8 @@ fn binops() {
 
     // with just the second argument tainted
     let taintmap = get_taint_map_for_function(
-        func,
+        &module,
+        funcname,
         vec![TaintedType::UntaintedValue, TaintedType::TaintedValue],
         HashMap::new(),
     );
@@ -303,7 +304,8 @@ fn binops() {
 
     // with %8 manually tainted, and nothing else
     let taintmap = get_taint_map_for_function(
-        func,
+        &module,
+        funcname,
         vec![TaintedType::UntaintedValue, TaintedType::UntaintedValue],
         std::iter::once((Name::from(8), TaintedType::TaintedValue)).collect(),
     );
@@ -365,13 +367,11 @@ fn binops() {
 fn phi() {
     let funcname = "conditional_nozero";
     let module = get_basic_module();
-    let func = module
-        .get_func_by_name(funcname)
-        .unwrap_or_else(|| panic!("Failed to find function named {:?}", funcname));
 
     // with both arguments untainted
     let taintmap = get_taint_map_for_function(
-        func,
+        &module,
+        funcname,
         vec![TaintedType::UntaintedValue, TaintedType::UntaintedValue],
         HashMap::new(),
     );
@@ -398,7 +398,8 @@ fn phi() {
 
     // with second argument tainted
     let taintmap = get_taint_map_for_function(
-        func,
+        &module,
+        funcname,
         vec![TaintedType::UntaintedValue, TaintedType::TaintedValue],
         HashMap::new(),
     );
@@ -428,13 +429,11 @@ fn phi() {
 fn load_and_store() {
     let funcname = "load_and_store";
     let module = get_memory_module();
-    let func = module
-        .get_func_by_name(funcname)
-        .unwrap_or_else(|| panic!("Failed to find function named {:?}", funcname));
 
     // with both arguments untainted
     let taintmap = get_taint_map_for_function(
-        func,
+        &module,
+        funcname,
         vec![
             TaintedType::untainted_ptr_to(TaintedType::UntaintedValue),
             TaintedType::UntaintedValue,
@@ -460,7 +459,8 @@ fn load_and_store() {
 
     // with value tainted: make sure that we correctly load a tainted value
     let taintmap = get_taint_map_for_function(
-        func,
+        &module,
+        funcname,
         vec![
             TaintedType::untainted_ptr_to(TaintedType::UntaintedValue),
             TaintedType::TaintedValue,
@@ -489,21 +489,26 @@ fn load_and_store() {
 fn alloca() {
     let funcname = "local_ptr";
     let module = get_memory_module();
-    let func = module
-        .get_func_by_name(funcname)
-        .unwrap_or_else(|| panic!("Failed to find function named {:?}", funcname));
 
     // with the argument untainted
-    let taintmap =
-        get_taint_map_for_function(func, vec![TaintedType::UntaintedValue], HashMap::new());
+    let taintmap = get_taint_map_for_function(
+        &module,
+        funcname,
+        vec![TaintedType::UntaintedValue],
+        HashMap::new(),
+    );
     assert_eq!(
         taintmap.get(&Name::from(5)),
         Some(&TaintedType::UntaintedValue)
     ); // load untainted value from the alloca'd space
 
     // with the argument tainted
-    let taintmap =
-        get_taint_map_for_function(func, vec![TaintedType::TaintedValue], HashMap::new());
+    let taintmap = get_taint_map_for_function(
+        &module,
+        funcname,
+        vec![TaintedType::TaintedValue],
+        HashMap::new(),
+    );
     assert_eq!(
         taintmap.get(&Name::from(5)),
         Some(&TaintedType::TaintedValue)
@@ -518,13 +523,11 @@ fn alloca() {
 fn overwrite() {
     let funcname = "overwrite";
     let module = get_memory_module();
-    let func = module
-        .get_func_by_name(funcname)
-        .unwrap_or_else(|| panic!("Failed to find function named {:?}", funcname));
 
     // with both arguments untainted
     let taintmap = get_taint_map_for_function(
-        func,
+        &module,
+        funcname,
         vec![
             TaintedType::untainted_ptr_to(TaintedType::UntaintedValue),
             TaintedType::UntaintedValue,
@@ -538,7 +541,8 @@ fn overwrite() {
 
     // with the second argument tainted
     let taintmap = get_taint_map_for_function(
-        func,
+        &module,
+        funcname,
         vec![
             TaintedType::untainted_ptr_to(TaintedType::UntaintedValue),
             TaintedType::TaintedValue,
@@ -555,13 +559,11 @@ fn overwrite() {
 fn load_and_store_mult() {
     let funcname = "load_and_store_mult";
     let module = get_memory_module();
-    let func = module
-        .get_func_by_name(funcname)
-        .unwrap_or_else(|| panic!("Failed to find function named {:?}", funcname));
 
     // with both arguments untainted
     let taintmap = get_taint_map_for_function(
-        func,
+        &module,
+        funcname,
         vec![
             TaintedType::untainted_ptr_to(TaintedType::UntaintedValue),
             TaintedType::UntaintedValue,
@@ -575,7 +577,8 @@ fn load_and_store_mult() {
 
     // with the second argument tainted
     let taintmap = get_taint_map_for_function(
-        func,
+        &module,
+        funcname,
         vec![
             TaintedType::untainted_ptr_to(TaintedType::UntaintedValue),
             TaintedType::TaintedValue,
@@ -592,13 +595,11 @@ fn load_and_store_mult() {
 fn array() {
     let funcname = "load_and_store_mult";
     let module = get_memory_module();
-    let func = module
-        .get_func_by_name(funcname)
-        .unwrap_or_else(|| panic!("Failed to find function named {:?}", funcname));
 
     // with both arguments untainted
     let taintmap = get_taint_map_for_function(
-        func,
+        &module,
+        funcname,
         vec![
             TaintedType::untainted_ptr_to(TaintedType::UntaintedValue),
             TaintedType::UntaintedValue,
@@ -612,7 +613,8 @@ fn array() {
 
     // with the second argument tainted
     let taintmap = get_taint_map_for_function(
-        func,
+        &module,
+        funcname,
         vec![
             TaintedType::untainted_ptr_to(TaintedType::UntaintedValue),
             TaintedType::TaintedValue,
@@ -628,7 +630,8 @@ fn array() {
     // (tainted) store to %0 doesn't affect the load from %4, which should
     // remain untainted.
     let taintmap = get_taint_map_for_function(
-        func,
+        &module,
+        funcname,
         vec![
             TaintedType::untainted_ptr_to(TaintedType::UntaintedValue),
             TaintedType::UntaintedValue,
