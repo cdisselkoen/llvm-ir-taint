@@ -536,9 +536,9 @@ impl<'m> ModuleTaintState<'m> {
                     fn_name
                 )
             });
-            let changed = self.process_function(func).unwrap_or_else(|e| {
-                panic!("In function {:?}: {}", fn_name, e)
-            });
+            let changed = self
+                .process_function(func)
+                .unwrap_or_else(|e| panic!("In function {:?}: {}", fn_name, e));
             if changed {
                 self.fn_worklist.insert(fn_name);
             }
@@ -575,18 +575,27 @@ impl<'m> ModuleTaintState<'m> {
         self.cur_fn = &f.name;
 
         // get the taint state for the current function, creating a new one if necessary
-        let cur_fn = self.fn_taint_states.entry(f.name.clone()).or_insert_with(|| {
-            FunctionTaintState::from_taint_map(
-            f.parameters.iter().map(|p| (p.name.clone(), TaintedType::from_llvm_type(&p.get_type()))).collect()
-            )
-        });
+        let cur_fn = self
+            .fn_taint_states
+            .entry(f.name.clone())
+            .or_insert_with(|| {
+                FunctionTaintState::from_taint_map(
+                    f.parameters
+                        .iter()
+                        .map(|p| (p.name.clone(), TaintedType::from_llvm_type(&p.get_type())))
+                        .collect(),
+                )
+            });
 
         let summary = match self.fn_summaries.entry(f.name.clone()) {
             Entry::Vacant(ventry) => {
                 // no summary: make a starter one, assuming everything is untainted
                 let param_llvm_types = f.parameters.iter().map(|p| p.get_type());
                 let ret_llvm_type = &f.return_type;
-                ventry.insert(FunctionSummary::new_untainted(param_llvm_types, ret_llvm_type))
+                ventry.insert(FunctionSummary::new_untainted(
+                    param_llvm_types,
+                    ret_llvm_type,
+                ))
             },
             Entry::Occupied(oentry) => oentry.into_mut(),
         };
@@ -1011,7 +1020,13 @@ impl<'m> ModuleTaintState<'m> {
                             .map(|op| cur_fn.get_type_of_operand(op));
                         if summary.update_ret(&ty.as_ref())? {
                             // summary changed: put all our callers on the worklist
-                            for caller in self.callers.get(self.cur_fn).into_iter().map(|hs| hs.iter()).flatten() {
+                            for caller in self
+                                .callers
+                                .get(self.cur_fn)
+                                .into_iter()
+                                .map(|hs| hs.iter())
+                                .flatten()
+                            {
                                 self.fn_worklist.insert(caller);
                             }
                             Ok(true)

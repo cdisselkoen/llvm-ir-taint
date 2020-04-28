@@ -22,10 +22,22 @@ fn simple_call() {
     );
     let caller_taintmap = mts.get_function_taint_map("simple_caller");
     let callee_taintmap = mts.get_function_taint_map("simple_callee");
-    assert_eq!(callee_taintmap.get(&Name::from(0)), Some(&TaintedType::TaintedValue));
-    assert_eq!(callee_taintmap.get(&Name::from(1)), Some(&TaintedType::UntaintedValue));
-    assert_eq!(callee_taintmap.get(&Name::from(3)), Some(&TaintedType::TaintedValue));
-    assert_eq!(caller_taintmap.get(&Name::from(2)), Some(&TaintedType::TaintedValue));
+    assert_eq!(
+        callee_taintmap.get(&Name::from(0)),
+        Some(&TaintedType::TaintedValue)
+    );
+    assert_eq!(
+        callee_taintmap.get(&Name::from(1)),
+        Some(&TaintedType::UntaintedValue)
+    );
+    assert_eq!(
+        callee_taintmap.get(&Name::from(3)),
+        Some(&TaintedType::TaintedValue)
+    );
+    assert_eq!(
+        caller_taintmap.get(&Name::from(2)),
+        Some(&TaintedType::TaintedValue)
+    );
 }
 
 #[test]
@@ -41,10 +53,22 @@ fn nested_call() {
     );
     let nested_caller_taintmap = mts.get_function_taint_map("nested_caller");
     let callee_taintmap = mts.get_function_taint_map("simple_callee");
-    assert_eq!(callee_taintmap.get(&Name::from(0)), Some(&TaintedType::TaintedValue));
-    assert_eq!(callee_taintmap.get(&Name::from(1)), Some(&TaintedType::UntaintedValue));
-    assert_eq!(callee_taintmap.get(&Name::from(3)), Some(&TaintedType::TaintedValue));
-    assert_eq!(nested_caller_taintmap.get(&Name::from(4)), Some(&TaintedType::TaintedValue));
+    assert_eq!(
+        callee_taintmap.get(&Name::from(0)),
+        Some(&TaintedType::TaintedValue)
+    );
+    assert_eq!(
+        callee_taintmap.get(&Name::from(1)),
+        Some(&TaintedType::UntaintedValue)
+    );
+    assert_eq!(
+        callee_taintmap.get(&Name::from(3)),
+        Some(&TaintedType::TaintedValue)
+    );
+    assert_eq!(
+        nested_caller_taintmap.get(&Name::from(4)),
+        Some(&TaintedType::TaintedValue)
+    );
 }
 
 #[test]
@@ -62,11 +86,26 @@ fn call_in_loop() {
     );
     let caller_taintmap = mts.get_function_taint_map("caller_with_loop");
     let callee_taintmap = mts.get_function_taint_map("simple_callee");
-    assert_eq!(callee_taintmap.get(&Name::from(0)), Some(&TaintedType::TaintedValue));
-    assert_eq!(callee_taintmap.get(&Name::from(1)), Some(&TaintedType::UntaintedValue));
-    assert_eq!(callee_taintmap.get(&Name::from(3)), Some(&TaintedType::TaintedValue));
-    assert_eq!(caller_taintmap.get(&Name::from(12)), Some(&TaintedType::TaintedValue));
-    assert_eq!(caller_taintmap.get(&Name::from(9)), Some(&TaintedType::TaintedValue));
+    assert_eq!(
+        callee_taintmap.get(&Name::from(0)),
+        Some(&TaintedType::TaintedValue)
+    );
+    assert_eq!(
+        callee_taintmap.get(&Name::from(1)),
+        Some(&TaintedType::UntaintedValue)
+    );
+    assert_eq!(
+        callee_taintmap.get(&Name::from(3)),
+        Some(&TaintedType::TaintedValue)
+    );
+    assert_eq!(
+        caller_taintmap.get(&Name::from(12)),
+        Some(&TaintedType::TaintedValue)
+    );
+    assert_eq!(
+        caller_taintmap.get(&Name::from(9)),
+        Some(&TaintedType::TaintedValue)
+    );
 }
 
 #[test]
@@ -81,7 +120,10 @@ fn recursive_call() {
         vec![TaintedType::UntaintedValue],
         std::iter::once((Name::from(2), TaintedType::TaintedValue)).collect(),
     );
-    assert_eq!(taintmap.get(&Name::from(0)), Some(&TaintedType::TaintedValue));
+    assert_eq!(
+        taintmap.get(&Name::from(0)),
+        Some(&TaintedType::TaintedValue)
+    );
 }
 
 #[test]
@@ -96,5 +138,8 @@ fn mutually_recursive_call() {
         vec![TaintedType::UntaintedValue],
         std::iter::once((Name::from(4), TaintedType::TaintedValue)).collect(),
     );
-    assert_eq!(taintmap.get(&Name::from(0)), Some(&TaintedType::TaintedValue));
+    assert_eq!(
+        taintmap.get(&Name::from(0)),
+        Some(&TaintedType::TaintedValue)
+    );
 }
