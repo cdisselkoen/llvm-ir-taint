@@ -68,3 +68,33 @@ fn call_in_loop() {
     assert_eq!(caller_taintmap.get(&Name::from(12)), Some(&TaintedType::TaintedValue));
     assert_eq!(caller_taintmap.get(&Name::from(9)), Some(&TaintedType::TaintedValue));
 }
+
+#[test]
+fn recursive_call() {
+    let module = get_module();
+
+    // untainted function input, but we mark %2 tainted, so the function input
+    // should be marked tainted at fixpoint
+    let taintmap = get_taint_map_for_function(
+        &module,
+        "recursive_simple",
+        vec![TaintedType::UntaintedValue],
+        std::iter::once((Name::from(2), TaintedType::TaintedValue)).collect(),
+    );
+    assert_eq!(taintmap.get(&Name::from(0)), Some(&TaintedType::TaintedValue));
+}
+
+#[test]
+fn mutually_recursive_call() {
+    let module = get_module();
+
+    // untainted function input, but we mark %4 tainted, so after recursion,
+    // the function input should eventually be marked tainted
+    let taintmap = get_taint_map_for_function(
+        &module,
+        "mutually_recursive_a",
+        vec![TaintedType::UntaintedValue],
+        std::iter::once((Name::from(4), TaintedType::TaintedValue)).collect(),
+    );
+    assert_eq!(taintmap.get(&Name::from(0)), Some(&TaintedType::TaintedValue));
+}
