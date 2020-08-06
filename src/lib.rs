@@ -1,5 +1,6 @@
 use either::Either;
 use llvm_ir::instruction::{groups, BinaryOp, HasResult, UnaryOp};
+use llvm_ir::types::NamedStructDef;
 use llvm_ir::*;
 use std::cell::RefCell;
 use std::collections::hash_map::Entry;
@@ -106,29 +107,25 @@ impl TaintedType {
     /// Produce the equivalent (untainted) `TaintedType` for a given LLVM type.
     /// Pointers will point to fresh `TaintedType`s to represent their element
     /// types; they will be assumed not to point to existing variables.
-    fn from_llvm_type(llvm_ty: &Type) -> Self {
+    fn from_llvm_type(llvm_ty: &Type, module: &Module) -> Self {
         match llvm_ty {
             Type::IntegerType { .. } => TaintedType::UntaintedValue,
             Type::PointerType { pointee_type, .. } => {
-                TaintedType::untainted_ptr_to(TaintedType::from_llvm_type(&**pointee_type))
+                TaintedType::untainted_ptr_to(TaintedType::from_llvm_type(&pointee_type, module))
             },
             Type::FPType(_) => TaintedType::UntaintedValue,
-            Type::VectorType { element_type, .. } => TaintedType::from_llvm_type(&**element_type),
-            Type::ArrayType { element_type, .. } => TaintedType::from_llvm_type(&**element_type),
+            Type::VectorType { element_type, .. } => TaintedType::from_llvm_type(&element_type, module),
+            Type::ArrayType { element_type, .. } => TaintedType::from_llvm_type(&element_type, module),
             Type::StructType { element_types, .. } => {
-                TaintedType::struct_of(element_types.iter().map(TaintedType::from_llvm_type))
+                TaintedType::struct_of(element_types.iter().map(|ty| TaintedType::from_llvm_type(ty, module)))
             },
-            Type::NamedStructType { name, ty } => match ty {
-                None => panic!(
+            Type::NamedStructType { name } => match module.types.named_struct_def(name) {
+                None => panic!("TaintedType::from_llvm_type on unknown named struct: name {:?}", name),
+                Some(NamedStructDef::Opaque) => panic!(
                     "TaintedType::from_llvm_type on an opaque struct named {:?}",
                     name
                 ),
-                Some(ty) => TaintedType::from_llvm_type(
-                    &ty.upgrade()
-                        .expect("Failed to upgrade weak reference")
-                        .read()
-                        .unwrap(),
-                ),
+                Some(NamedStructDef::Defined(ty)) => TaintedType::from_llvm_type(&ty, module),
             },
             Type::X86_MMXType => TaintedType::UntaintedValue,
             Type::MetadataType => TaintedType::UntaintedValue,
@@ -140,27 +137,26 @@ impl TaintedType {
     /// If the `Constant` is a `GlobalReference`, we'll create a fresh
     /// `TaintedType` for the global being referenced; we'll assume the global
     /// hasn't been created yet.
-    fn from_constant(constant: &Constant) -> Self {
+    fn from_constant(constant: &Constant, module: &Module) -> Self {
         match constant {
             Constant::Int { .. } => TaintedType::UntaintedValue,
             Constant::Float(_) => TaintedType::UntaintedValue,
-            Constant::Null(ty) => TaintedType::from_llvm_type(ty),
-            Constant::AggregateZero(ty) => TaintedType::from_llvm_type(ty),
+            Constant::Null(ty) => TaintedType::from_llvm_type(ty, module),
+            Constant::AggregateZero(ty) => TaintedType::from_llvm_type(ty, module),
             Constant::Struct { values, .. } => {
-                TaintedType::struct_of(values.iter().map(|v| Self::from_constant(v)))
+                TaintedType::struct_of(values.iter().map(|v| Self::from_constant(v, module)))
             },
-            Constant::Array { element_type, .. } => TaintedType::from_llvm_type(element_type),
+            Constant::Array { element_type, .. } => TaintedType::from_llvm_type(element_type, module),
             Constant::Vector(vec) => {
                 // all elements should be the same type, so we do the type of the first one
                 TaintedType::from_llvm_type(
-                    &vec.get(0)
-                        .expect("Constant::Vector should not be empty")
-                        .get_type(),
+                    &module.type_of(vec.get(0).expect("Constant::Vector should not be empty")),
+                    module,
                 )
             },
-            Constant::Undef(ty) => TaintedType::from_llvm_type(ty),
+            Constant::Undef(ty) => TaintedType::from_llvm_type(ty, module),
             Constant::GlobalReference { ty, .. } => {
-                TaintedType::untainted_ptr_to(TaintedType::from_llvm_type(ty))
+                TaintedType::untainted_ptr_to(TaintedType::from_llvm_type(ty, module))
             },
             _ => unimplemented!("TaintedType::from_constant on {:?}", constant),
         }
@@ -241,14 +237,19 @@ impl TaintedType {
 }
 
 #[derive(Clone)]
-struct FunctionTaintState {
+struct FunctionTaintState<'m> {
     /// Map from `Name`s of variables to their (currently believed) types.
     map: HashMap<Name, TaintedType>,
+    /// Reference to the llvm-ir `Module`
+    module: &'m Module,
 }
 
-impl FunctionTaintState {
-    fn from_taint_map(taintmap: HashMap<Name, TaintedType>) -> Self {
-        Self { map: taintmap }
+impl<'m> FunctionTaintState<'m> {
+    fn from_taint_map(taintmap: HashMap<Name, TaintedType>, module: &'m Module) -> Self {
+        Self {
+            map: taintmap,
+            module,
+        }
     }
 
     fn into_taint_map(self) -> HashMap<Name, TaintedType> {
@@ -258,7 +259,7 @@ impl FunctionTaintState {
     /// Get the `TaintedType` of the given `Operand`, according to the current state.
     fn get_type_of_operand(&self, op: &Operand) -> TaintedType {
         match op {
-            Operand::ConstantOperand(constant) => TaintedType::from_constant(constant),
+            Operand::ConstantOperand(constant) => TaintedType::from_constant(constant, &self.module),
             Operand::MetadataOperand => TaintedType::UntaintedValue,
             Operand::LocalOperand { name, .. } => match self.map.get(name) {
                 Some(ty) => ty.clone(),
@@ -277,7 +278,7 @@ impl FunctionTaintState {
                     // be corrected on a future pass. (And we'll definitely have
                     // a future pass, because that variable becoming defined
                     // counts as a change for the fixpoint algorithm.)
-                    TaintedType::from_llvm_type(&op.get_type())
+                    TaintedType::from_llvm_type(&self.module.type_of(op), &self.module)
                 },
             },
         }
@@ -368,7 +369,7 @@ pub struct ModuleTaintState<'m> {
     module: &'m Module,
 
     /// Map from function name to the `FunctionTaintState` for that function
-    fn_taint_states: HashMap<String, FunctionTaintState>,
+    fn_taint_states: HashMap<String, FunctionTaintState<'m>>,
 
     /// Map from function name to the `FunctionSummary` for that function
     fn_summaries: HashMap<String, FunctionSummary>,
@@ -396,17 +397,18 @@ struct FunctionSummary {
 
 impl FunctionSummary {
     fn new_untainted(
-        param_llvm_types: impl IntoIterator<Item = Type>,
+        param_llvm_types: impl IntoIterator<Item = TypeRef>,
         ret_llvm_type: &Type,
+        module: &Module,
     ) -> Self {
         Self {
             params: param_llvm_types
                 .into_iter()
-                .map(|ty| TaintedType::from_llvm_type(&ty))
+                .map(|ty| TaintedType::from_llvm_type(&ty, module))
                 .collect(),
             ret: match ret_llvm_type {
                 Type::VoidType => None,
-                ty => Some(TaintedType::from_llvm_type(ty)),
+                ty => Some(TaintedType::from_llvm_type(ty, module)),
             },
         }
     }
@@ -488,7 +490,7 @@ impl<'m> ModuleTaintState<'m> {
             module,
             fn_taint_states: std::iter::once((
                 start_fn.into(),
-                FunctionTaintState::from_taint_map(start_fn_taint_map),
+                FunctionTaintState::from_taint_map(start_fn_taint_map, module),
             ))
             .collect(),
             fn_summaries: HashMap::new(),
@@ -556,7 +558,7 @@ impl<'m> ModuleTaintState<'m> {
         fn_name
     }
 
-    fn get_cur_fn<'a>(&'a mut self) -> &'a mut FunctionTaintState {
+    fn get_cur_fn<'a>(&'a mut self) -> &'a mut FunctionTaintState<'m> {
         let cur_fn_name: &str = &self.cur_fn;
         self.fn_taint_states
             .get_mut(cur_fn_name.into())
@@ -575,6 +577,7 @@ impl<'m> ModuleTaintState<'m> {
         self.cur_fn = &f.name;
 
         // get the taint state for the current function, creating a new one if necessary
+        let module = self.module; // this is for the borrow checker - allows us to access `module` without needing to borrow `self`
         let cur_fn = self
             .fn_taint_states
             .entry(f.name.clone())
@@ -582,19 +585,23 @@ impl<'m> ModuleTaintState<'m> {
                 FunctionTaintState::from_taint_map(
                     f.parameters
                         .iter()
-                        .map(|p| (p.name.clone(), TaintedType::from_llvm_type(&p.get_type())))
+                        .map(|p| {
+                            (p.name.clone(), TaintedType::from_llvm_type(&module.type_of(p), &module))
+                        })
                         .collect(),
+                    module,
                 )
             });
 
         let summary = match self.fn_summaries.entry(f.name.clone()) {
             Entry::Vacant(ventry) => {
                 // no summary: make a starter one, assuming everything is untainted
-                let param_llvm_types = f.parameters.iter().map(|p| p.get_type());
+                let param_llvm_types = f.parameters.iter().map(|p| module.type_of(p));
                 let ret_llvm_type = &f.return_type;
                 ventry.insert(FunctionSummary::new_untainted(
                     param_llvm_types,
                     ret_llvm_type,
+                    module,
                 ))
             },
             Entry::Occupied(oentry) => oentry.into_mut(),
@@ -667,30 +674,31 @@ impl<'m> ModuleTaintState<'m> {
                     cur_fn.update_var_taintedtype(uop.get_result().clone(), op_ty)
                 },
                 Instruction::BitCast(bc) => {
+                    let module = self.module;
                     let cur_fn = self.get_cur_fn();
                     let from_ty = cur_fn.get_type_of_operand(&bc.operand);
                     let result_ty = match from_ty {
-                        TaintedType::UntaintedValue => TaintedType::from_llvm_type(&bc.to_type),
+                        TaintedType::UntaintedValue => TaintedType::from_llvm_type(&bc.to_type, module),
                         TaintedType::TaintedValue => {
-                            TaintedType::from_llvm_type(&bc.to_type).to_tainted()
+                            TaintedType::from_llvm_type(&bc.to_type, module).to_tainted()
                         },
-                        TaintedType::UntaintedPointer(rc) => match &bc.to_type {
+                        TaintedType::UntaintedPointer(rc) => match bc.to_type.as_ref() {
                             Type::PointerType { pointee_type, .. } => {
                                 let result_pointee_type = if rc.borrow().is_tainted() {
-                                    TaintedType::from_llvm_type(&**pointee_type).to_tainted()
+                                    TaintedType::from_llvm_type(&pointee_type, module).to_tainted()
                                 } else {
-                                    TaintedType::from_llvm_type(&**pointee_type)
+                                    TaintedType::from_llvm_type(&pointee_type, module)
                                 };
                                 TaintedType::untainted_ptr_to(result_pointee_type)
                             },
                             _ => return Err("Bitcast from pointer to non-pointer".into()), // my reading of the LLVM 9 LangRef disallows this
                         },
-                        TaintedType::TaintedPointer(rc) => match &bc.to_type {
+                        TaintedType::TaintedPointer(rc) => match bc.to_type.as_ref() {
                             Type::PointerType { pointee_type, .. } => {
                                 let result_pointee_type = if rc.borrow().is_tainted() {
-                                    TaintedType::from_llvm_type(&**pointee_type).to_tainted()
+                                    TaintedType::from_llvm_type(&pointee_type, module).to_tainted()
                                 } else {
-                                    TaintedType::from_llvm_type(&**pointee_type)
+                                    TaintedType::from_llvm_type(&pointee_type, module)
                                 };
                                 TaintedType::tainted_ptr_to(result_pointee_type)
                             },
@@ -698,9 +706,9 @@ impl<'m> ModuleTaintState<'m> {
                         },
                         from_ty @ TaintedType::Struct(_) => {
                             if from_ty.is_tainted() {
-                                TaintedType::from_llvm_type(&bc.to_type).to_tainted()
+                                TaintedType::from_llvm_type(&bc.to_type, module).to_tainted()
                             } else {
-                                TaintedType::from_llvm_type(&bc.to_type)
+                                TaintedType::from_llvm_type(&bc.to_type, module)
                             }
                         },
                     };
@@ -757,12 +765,14 @@ impl<'m> ModuleTaintState<'m> {
                     cur_fn.update_var_taintedtype(iv.get_result().clone(), aggregate)
                 },
                 Instruction::Alloca(alloca) => {
+                    let module = self.module;
                     let cur_fn = self.get_cur_fn();
                     let result_ty = if cur_fn.is_scalar_operand_tainted(&alloca.num_elements)? {
                         TaintedType::TaintedValue
                     } else {
                         TaintedType::untainted_ptr_to(TaintedType::from_llvm_type(
                             &alloca.allocated_type,
+                            module,
                         ))
                     };
                     cur_fn.update_var_taintedtype(alloca.get_result().clone(), result_ty)
@@ -888,44 +898,41 @@ impl<'m> ModuleTaintState<'m> {
                 },
                 Instruction::Call(call) => {
                     match &call.function {
-                        Either::Right(Operand::ConstantOperand(Constant::GlobalReference {
-                            name: Name::Name(name),
-                            ..
-                        })) => {
-                            if name.starts_with("llvm.lifetime")
-                                || name.starts_with("llvm.invariant")
-                                || name.starts_with("llvm.launder.invariant")
-                                || name.starts_with("llvm.strip.invariant")
-                                || name.starts_with("llvm.dbg")
-                            {
-                                Ok(false) // these are all safe to ignore
-                            } else if name.starts_with("llvm.memset") {
-                                // update the address type as appropriate, just like for Store
-                                let cur_fn = self.get_cur_fn();
-                                let address_operand = call.arguments.get(0).map(|(op, _)| op).ok_or_else(|| format!("Expected llvm.memset to have at least three arguments, but it has {}", call.arguments.len()))?;
-                                let value_operand = call.arguments.get(1).map(|(op, _)| op).ok_or_else(|| format!("Expected llvm.memset to have at least three arguments, but it has {}", call.arguments.len()))?;
-                                let address_ty = cur_fn.get_type_of_operand(address_operand);
-                                let value_ty = cur_fn.get_type_of_operand(value_operand);
-                                let pointee_ty = match address_ty {
-                                    TaintedType::UntaintedPointer(rc) | TaintedType::TaintedPointer(rc) => rc,
-                                    _ => return Err(format!("llvm.memset: expected first argument to be a pointer, but it was {:?}", address_ty)),
-                                };
-                                cur_fn.update_pointee_taintedtype(&pointee_ty, value_ty)
-                            } else {
-                                match self.module.get_func_by_name(name) {
-                                    Some(func) => self.process_function_call(call, func),
-                                    None => panic!(
-                                        "Call of a function named {:?} not found in the module",
-                                        name
-                                    ),
+                        Either::Right(Operand::ConstantOperand(cref)) => match cref.as_ref() {
+                            Constant::GlobalReference { name: Name::Name(name), .. } => {
+                                if name.starts_with("llvm.lifetime")
+                                    || name.starts_with("llvm.invariant")
+                                    || name.starts_with("llvm.launder.invariant")
+                                    || name.starts_with("llvm.strip.invariant")
+                                    || name.starts_with("llvm.dbg")
+                                {
+                                    Ok(false) // these are all safe to ignore
+                                } else if name.starts_with("llvm.memset") {
+                                    // update the address type as appropriate, just like for Store
+                                    let cur_fn = self.get_cur_fn();
+                                    let address_operand = call.arguments.get(0).map(|(op, _)| op).ok_or_else(|| format!("Expected llvm.memset to have at least three arguments, but it has {}", call.arguments.len()))?;
+                                    let value_operand = call.arguments.get(1).map(|(op, _)| op).ok_or_else(|| format!("Expected llvm.memset to have at least three arguments, but it has {}", call.arguments.len()))?;
+                                    let address_ty = cur_fn.get_type_of_operand(address_operand);
+                                    let value_ty = cur_fn.get_type_of_operand(value_operand);
+                                    let pointee_ty = match address_ty {
+                                        TaintedType::UntaintedPointer(rc) | TaintedType::TaintedPointer(rc) => rc,
+                                        _ => return Err(format!("llvm.memset: expected first argument to be a pointer, but it was {:?}", address_ty)),
+                                    };
+                                    cur_fn.update_pointee_taintedtype(&pointee_ty, value_ty)
+                                } else {
+                                    match self.module.get_func_by_name(name) {
+                                        Some(func) => self.process_function_call(call, func),
+                                        None => panic!(
+                                            "Call of a function named {:?} not found in the module",
+                                            name
+                                        ),
+                                    }
                                 }
-                            }
-                        },
-                        Either::Right(Operand::ConstantOperand(Constant::GlobalReference {
-                            name,
-                            ..
-                        })) => {
-                            unimplemented!("Call of a function with a numbered name: {:?}", name)
+                            },
+                            Constant::GlobalReference{ name, .. } => {
+                                unimplemented!("Call of a function with a numbered name: {:?}", name)
+                            },
+                            _ => unimplemented!("Call of a function pointer"),
                         },
                         Either::Right(_) => unimplemented!("Call of a function pointer"),
                         Either::Left(_) => unimplemented!("inline assembly"),
@@ -942,6 +949,7 @@ impl<'m> ModuleTaintState<'m> {
         call: &instruction::Call,
         func: &'m Function,
     ) -> Result<bool, String> {
+        let module = self.module;
         // mark this function as a caller of the called function.
         // This ensures that if the summary of the called function is ever updated,
         // the current function will be put back on the worklist.
@@ -956,8 +964,9 @@ impl<'m> ModuleTaintState<'m> {
                 // called function to the worklist so that we can compute a better one
                 self.fn_worklist.insert(&func.name);
                 ventry.insert(FunctionSummary::new_untainted(
-                    call.arguments.iter().map(|(arg, _)| arg.get_type()),
-                    &call.get_type(),
+                    call.arguments.iter().map(|(arg, _)| module.type_of(arg)),
+                    &module.type_of(call),
+                    module,
                 ))
             },
         };
@@ -1058,9 +1067,11 @@ impl Index for Operand {
     fn as_constant(&self) -> Option<u64> {
         match self {
             Operand::LocalOperand { .. } => None,
-            Operand::ConstantOperand(Constant::Int { value, .. }) => Some(*value),
+            Operand::ConstantOperand(cref) => match cref.as_ref() {
+                Constant::Int { value, .. } => Some(*value),
+                _ => unimplemented!("as_constant on {:?}", self),
+            },
             Operand::MetadataOperand => None,
-            _ => unimplemented!("as_constant on {:?}", self),
         }
     }
 }
