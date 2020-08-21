@@ -224,21 +224,22 @@ impl TaintedType {
                 pointee1.borrow().join(&*pointee2.borrow())?,
             )),
             (Struct(elements1), Struct(elements2)) => {
-                assert_eq!(
-                    elements1.len(),
-                    elements2.len(),
-                    "join: type mismatch: struct of {} elements with struct of {} elements",
-                    elements1.len(),
-                    elements2.len()
-                );
-                Ok(Self::struct_of(
-                    elements1
-                        .iter()
-                        .zip(elements2.iter())
-                        .map(|(el1, el2)| el1.borrow().join(&el2.borrow()))
-                        .collect::<Result<Vec<_>, String>>()?
-                        .into_iter(),
-                ))
+                if elements1.len() != elements2.len() {
+                    Err(format!(
+                        "join: type mismatch: struct of {} elements with struct of {} elements",
+                        elements1.len(),
+                        elements2.len()
+                    ))
+                } else {
+                    Ok(Self::struct_of(
+                        elements1
+                            .iter()
+                            .zip(elements2.iter())
+                            .map(|(el1, el2)| el1.borrow().join(&el2.borrow()))
+                            .collect::<Result<Vec<_>, String>>()?
+                            .into_iter(),
+                    ))
+                }
             },
             (UntaintedFnPtr, UntaintedFnPtr) => Ok(UntaintedFnPtr),
             (UntaintedFnPtr, TaintedFnPtr) => Ok(TaintedFnPtr),
