@@ -107,7 +107,7 @@ impl TaintedType {
     /// Produce the equivalent (untainted) `TaintedType` for a given LLVM type.
     /// Pointers will point to fresh `TaintedType`s to represent their element
     /// types; they will be assumed not to point to existing variables.
-    fn from_llvm_type(llvm_ty: &Type, module: &Module) -> Self {
+    pub fn from_llvm_type(llvm_ty: &Type, module: &Module) -> Self {
         match llvm_ty {
             Type::IntegerType { .. } => TaintedType::UntaintedValue,
             Type::PointerType { pointee_type, .. } => {
@@ -137,7 +137,7 @@ impl TaintedType {
     /// If the `Constant` is a `GlobalReference`, we'll create a fresh
     /// `TaintedType` for the global being referenced; we'll assume the global
     /// hasn't been created yet.
-    fn from_constant(constant: &Constant, module: &Module) -> Self {
+    pub fn from_constant(constant: &Constant, module: &Module) -> Self {
         match constant {
             Constant::Int { .. } => TaintedType::UntaintedValue,
             Constant::Float(_) => TaintedType::UntaintedValue,
@@ -176,7 +176,7 @@ impl TaintedType {
         }
     }
 
-    fn to_tainted(&self) -> Self {
+    pub fn to_tainted(&self) -> Self {
         match self {
             TaintedType::UntaintedValue => TaintedType::TaintedValue,
             TaintedType::TaintedValue => TaintedType::TaintedValue,
