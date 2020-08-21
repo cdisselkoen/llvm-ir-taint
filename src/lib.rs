@@ -80,6 +80,10 @@ pub enum TaintedType {
     TaintedPointer(Rc<RefCell<TaintedType>>),
     /// A struct, with the given element types
     Struct(Vec<Rc<RefCell<TaintedType>>>),
+    /// An untainted function pointer
+    UntaintedFnPtr,
+    /// A tainted function pointer
+    TaintedFnPtr,
 }
 
 impl TaintedType {
@@ -127,6 +131,7 @@ impl TaintedType {
                 ),
                 Some(NamedStructDef::Defined(ty)) => TaintedType::from_llvm_type(&ty, module),
             },
+            Type::FuncType { .. } => TaintedType::UntaintedFnPtr,
             Type::X86_MMXType => TaintedType::UntaintedValue,
             Type::MetadataType => TaintedType::UntaintedValue,
             _ => unimplemented!("TaintedType::from_llvm_type on {:?}", llvm_ty),
@@ -173,6 +178,8 @@ impl TaintedType {
                 // a struct is tainted if any of its elements are
                 elements.iter().any(|e| e.borrow().is_tainted())
             },
+            TaintedType::UntaintedFnPtr => false,
+            TaintedType::TaintedFnPtr => true,
         }
     }
 
@@ -185,6 +192,8 @@ impl TaintedType {
             TaintedType::Struct(elements) => {
                 TaintedType::struct_of(elements.iter().map(|e| e.borrow().to_tainted()))
             },
+            TaintedType::UntaintedFnPtr => TaintedType::TaintedFnPtr,
+            TaintedType::TaintedFnPtr => TaintedType::TaintedFnPtr,
         }
     }
 
@@ -231,6 +240,10 @@ impl TaintedType {
                         .into_iter(),
                 ))
             },
+            (UntaintedFnPtr, UntaintedFnPtr) => Ok(UntaintedFnPtr),
+            (UntaintedFnPtr, TaintedFnPtr) => Ok(TaintedFnPtr),
+            (TaintedFnPtr, UntaintedFnPtr) => Ok(TaintedFnPtr),
+            (TaintedFnPtr, TaintedFnPtr) => Ok(TaintedFnPtr),
             _ => Err(format!("join: type mismatch: {:?} vs. {:?}", self, other)),
         }
     }
@@ -290,6 +303,8 @@ impl<'m> FunctionTaintState<'m> {
         match self.get_type_of_operand(op) {
             TaintedType::UntaintedValue => Ok(false),
             TaintedType::TaintedValue => Ok(true),
+            TaintedType::UntaintedFnPtr => Ok(false),
+            TaintedType::TaintedFnPtr => Ok(true),
             TaintedType::UntaintedPointer(_) => Err(format!(
                 "is_scalar_operand_tainted(): operand has pointer type: {:?}",
                 op
@@ -678,8 +693,10 @@ impl<'m> ModuleTaintState<'m> {
                     let cur_fn = self.get_cur_fn();
                     let from_ty = cur_fn.get_type_of_operand(&bc.operand);
                     let result_ty = match from_ty {
-                        TaintedType::UntaintedValue => TaintedType::from_llvm_type(&bc.to_type, module),
-                        TaintedType::TaintedValue => {
+                        TaintedType::UntaintedValue | TaintedType::UntaintedFnPtr => {
+                            TaintedType::from_llvm_type(&bc.to_type, module)
+                        },
+                        TaintedType::TaintedValue | TaintedType::TaintedFnPtr => {
                             TaintedType::from_llvm_type(&bc.to_type, module).to_tainted()
                         },
                         TaintedType::UntaintedPointer(rc) => match bc.to_type.as_ref() {
@@ -780,17 +797,14 @@ impl<'m> ModuleTaintState<'m> {
                 Instruction::Load(load) => {
                     let cur_fn = self.get_cur_fn();
                     let result_ty = match cur_fn.get_type_of_operand(&load.address) {
-                        TaintedType::UntaintedValue => {
+                        TaintedType::UntaintedValue | TaintedType::TaintedValue => {
                             return Err(format!(
                                 "Load: address is not a pointer: {:?}",
                                 &load.address
                             ));
                         },
-                        TaintedType::TaintedValue => {
-                            return Err(format!(
-                                "Load: address is not a pointer: {:?}",
-                                &load.address
-                            ));
+                        TaintedType::UntaintedFnPtr | TaintedType::TaintedFnPtr => {
+                            return Err("Loading from a function pointer".into());
                         },
                         TaintedType::Struct(_) => {
                             return Err(format!(
@@ -808,14 +822,15 @@ impl<'m> ModuleTaintState<'m> {
                 Instruction::Store(store) => {
                     let cur_fn = self.get_cur_fn();
                     match cur_fn.get_type_of_operand(&store.address) {
-                        TaintedType::UntaintedValue => Err(format!(
-                            "Store: address is not a pointer: {:?}",
-                            &store.address
-                        )),
-                        TaintedType::TaintedValue => Err(format!(
-                            "Store: address is not a pointer: {:?}",
-                            &store.address
-                        )),
+                        TaintedType::UntaintedValue | TaintedType::TaintedValue => {
+                            Err(format!(
+                                "Store: address is not a pointer: {:?}",
+                                &store.address
+                            ))
+                        },
+                        TaintedType::UntaintedFnPtr | TaintedType::TaintedFnPtr => {
+                            Err("Storing to a function pointer".into())
+                        },
                         TaintedType::Struct(_) => Err(format!(
                             "Store: address is not a pointer: {:?}",
                             &store.address
@@ -840,14 +855,12 @@ impl<'m> ModuleTaintState<'m> {
                 Instruction::PtrToInt(pti) => {
                     let cur_fn = self.get_cur_fn();
                     match cur_fn.get_type_of_operand(&pti.operand) {
-                        TaintedType::UntaintedPointer(_) => cur_fn.update_var_taintedtype(
-                            pti.get_result().clone(),
-                            TaintedType::UntaintedValue,
-                        ),
-                        TaintedType::TaintedPointer(_) => cur_fn.update_var_taintedtype(
-                            pti.get_result().clone(),
-                            TaintedType::TaintedValue,
-                        ),
+                        TaintedType::UntaintedPointer(_) | TaintedType::UntaintedFnPtr => {
+                            cur_fn.update_var_taintedtype(pti.get_result().clone(), TaintedType::UntaintedValue)
+                        },
+                        TaintedType::TaintedPointer(_) | TaintedType::TaintedFnPtr => {
+                            cur_fn.update_var_taintedtype(pti.get_result().clone(), TaintedType::TaintedValue)
+                        },
                         TaintedType::UntaintedValue => {
                             Err(format!("PtrToInt on an UntaintedValue: {:?}", &pti.operand))
                         },
@@ -1119,11 +1132,11 @@ fn _get_element_ptr<'a, 'b, I: Index + 'b>(
     };
     // now the rest of this is just for dealing with subsequent indices
     match parent_ptr {
-        TaintedType::UntaintedValue => {
+        TaintedType::UntaintedValue | TaintedType::TaintedValue => {
             Err("get_element_ptr: address is not a pointer, or too many indices".into())
         },
-        TaintedType::TaintedValue => {
-            Err("get_element_ptr: address is not a pointer, or too many indices".into())
+        TaintedType::UntaintedFnPtr | TaintedType::TaintedFnPtr => {
+            Err("get_element_ptr on a function pointer".into())
         },
         TaintedType::Struct(_) => {
             Err("get_element_ptr: address is not a pointer, or too many indices".into())
@@ -1141,6 +1154,19 @@ fn _get_element_ptr<'a, 'b, I: Index + 'b>(
                         Ok(TaintedType::TaintedPointer(rc.clone()))
                     } else {
                         Ok(TaintedType::UntaintedPointer(rc.clone()))
+                    }
+                },
+                TaintedType::TaintedFnPtr | TaintedType::UntaintedFnPtr => {
+                    match indices.peek() {
+                        None if parent_ptr.is_tainted() => {
+                            Ok(TaintedType::TaintedPointer(rc.clone()))
+                        },
+                        None => {
+                            Ok(TaintedType::UntaintedPointer(rc.clone()))
+                        },
+                        Some(_) => {
+                            Err("get_element_ptr on a function pointer, or too many indices".into())
+                        },
                     }
                 },
                 inner_ptr @ TaintedType::TaintedPointer(_)
