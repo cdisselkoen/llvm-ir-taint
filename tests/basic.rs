@@ -21,12 +21,13 @@ fn basic_operation() {
     let module = get_basic_module();
 
     // with both arguments tainted
-    let taintmap = get_taint_map_for_function(
+    let mts = do_taint_analysis(
         &module,
         funcname,
         vec![TaintedType::TaintedValue, TaintedType::TaintedValue],
         HashMap::new(),
     );
+    let taintmap = mts.get_function_taint_map(funcname);
     assert_eq!(
         taintmap.get(&Name::from(0)),
         Some(&TaintedType::TaintedValue)
@@ -45,12 +46,13 @@ fn basic_operation() {
     );
 
     // with neither argument tainted
-    let taintmap = get_taint_map_for_function(
+    let mts = do_taint_analysis(
         &module,
         funcname,
         vec![TaintedType::UntaintedValue, TaintedType::UntaintedValue],
         HashMap::new(),
     );
+    let taintmap = mts.get_function_taint_map(funcname);
     assert_eq!(
         taintmap.get(&Name::from(0)),
         Some(&TaintedType::UntaintedValue)
@@ -69,12 +71,13 @@ fn basic_operation() {
     );
 
     // with just the first argument tainted
-    let taintmap = get_taint_map_for_function(
+    let mts = do_taint_analysis(
         &module,
         funcname,
         vec![TaintedType::TaintedValue, TaintedType::UntaintedValue],
         HashMap::new(),
     );
+    let taintmap = mts.get_function_taint_map(funcname);
     assert_eq!(
         taintmap.get(&Name::from(0)),
         Some(&TaintedType::TaintedValue)
@@ -93,12 +96,13 @@ fn basic_operation() {
     );
 
     // with just the second argument tainted
-    let taintmap = get_taint_map_for_function(
+    let mts = do_taint_analysis(
         &module,
         funcname,
         vec![TaintedType::UntaintedValue, TaintedType::TaintedValue],
         HashMap::new(),
     );
+    let taintmap = mts.get_function_taint_map(funcname);
     assert_eq!(
         taintmap.get(&Name::from(0)),
         Some(&TaintedType::UntaintedValue)
@@ -123,12 +127,13 @@ fn binops() {
     let module = get_basic_module();
 
     // with both arguments tainted
-    let taintmap = get_taint_map_for_function(
+    let mts = do_taint_analysis(
         &module,
         funcname,
         vec![TaintedType::TaintedValue, TaintedType::TaintedValue],
         HashMap::new(),
     );
+    let taintmap = mts.get_function_taint_map(funcname);
     assert_eq!(
         taintmap.get(&Name::from(0)),
         Some(&TaintedType::TaintedValue)
@@ -183,12 +188,13 @@ fn binops() {
     );
 
     // with neither argument tainted
-    let taintmap = get_taint_map_for_function(
+    let mts = do_taint_analysis(
         &module,
         funcname,
         vec![TaintedType::UntaintedValue, TaintedType::UntaintedValue],
         HashMap::new(),
     );
+    let taintmap = mts.get_function_taint_map(funcname);
     assert_eq!(
         taintmap.get(&Name::from(0)),
         Some(&TaintedType::UntaintedValue)
@@ -243,12 +249,13 @@ fn binops() {
     );
 
     // with just the second argument tainted
-    let taintmap = get_taint_map_for_function(
+    let mts = do_taint_analysis(
         &module,
         funcname,
         vec![TaintedType::UntaintedValue, TaintedType::TaintedValue],
         HashMap::new(),
     );
+    let taintmap = mts.get_function_taint_map(funcname);
     assert_eq!(
         taintmap.get(&Name::from(0)),
         Some(&TaintedType::UntaintedValue)
@@ -303,12 +310,13 @@ fn binops() {
     );
 
     // with %8 manually tainted, and nothing else
-    let taintmap = get_taint_map_for_function(
+    let mts = do_taint_analysis(
         &module,
         funcname,
         vec![TaintedType::UntaintedValue, TaintedType::UntaintedValue],
         std::iter::once((Name::from(8), TaintedType::TaintedValue)).collect(),
     );
+    let taintmap = mts.get_function_taint_map(funcname);
     assert_eq!(
         taintmap.get(&Name::from(0)),
         Some(&TaintedType::UntaintedValue)
@@ -369,12 +377,13 @@ fn phi() {
     let module = get_basic_module();
 
     // with both arguments untainted
-    let taintmap = get_taint_map_for_function(
+    let mts = do_taint_analysis(
         &module,
         funcname,
         vec![TaintedType::UntaintedValue, TaintedType::UntaintedValue],
         HashMap::new(),
     );
+    let taintmap = mts.get_function_taint_map(funcname);
     assert_eq!(
         taintmap.get(&Name::from(0)),
         Some(&TaintedType::UntaintedValue)
@@ -397,12 +406,13 @@ fn phi() {
     );
 
     // with second argument tainted
-    let taintmap = get_taint_map_for_function(
+    let mts = do_taint_analysis(
         &module,
         funcname,
         vec![TaintedType::UntaintedValue, TaintedType::TaintedValue],
         HashMap::new(),
     );
+    let taintmap = mts.get_function_taint_map(funcname);
     assert_eq!(
         taintmap.get(&Name::from(0)),
         Some(&TaintedType::UntaintedValue)
@@ -431,7 +441,7 @@ fn load_and_store() {
     let module = get_memory_module();
 
     // with both arguments untainted
-    let taintmap = get_taint_map_for_function(
+    let mts = do_taint_analysis(
         &module,
         funcname,
         vec![
@@ -440,6 +450,7 @@ fn load_and_store() {
         ],
         HashMap::new(),
     );
+    let taintmap = mts.get_function_taint_map(funcname);
     assert_eq!(
         taintmap.get(&Name::from(0)),
         Some(&TaintedType::untainted_ptr_to(TaintedType::UntaintedValue))
@@ -458,7 +469,7 @@ fn load_and_store() {
     );
 
     // with value tainted: make sure that we correctly load a tainted value
-    let taintmap = get_taint_map_for_function(
+    let mts = do_taint_analysis(
         &module,
         funcname,
         vec![
@@ -467,6 +478,7 @@ fn load_and_store() {
         ],
         HashMap::new(),
     );
+    let taintmap = mts.get_function_taint_map(funcname);
     assert_eq!(
         taintmap.get(&Name::from(0)),
         Some(&TaintedType::untainted_ptr_to(TaintedType::TaintedValue))
@@ -491,24 +503,26 @@ fn alloca() {
     let module = get_memory_module();
 
     // with the argument untainted
-    let taintmap = get_taint_map_for_function(
+    let mts = do_taint_analysis(
         &module,
         funcname,
         vec![TaintedType::UntaintedValue],
         HashMap::new(),
     );
+    let taintmap = mts.get_function_taint_map(funcname);
     assert_eq!(
         taintmap.get(&Name::from(5)),
         Some(&TaintedType::UntaintedValue)
     ); // load untainted value from the alloca'd space
 
     // with the argument tainted
-    let taintmap = get_taint_map_for_function(
+    let mts = do_taint_analysis(
         &module,
         funcname,
         vec![TaintedType::TaintedValue],
         HashMap::new(),
     );
+    let taintmap = mts.get_function_taint_map(funcname);
     assert_eq!(
         taintmap.get(&Name::from(5)),
         Some(&TaintedType::TaintedValue)
@@ -525,7 +539,7 @@ fn overwrite() {
     let module = get_memory_module();
 
     // with both arguments untainted
-    let taintmap = get_taint_map_for_function(
+    let mts = do_taint_analysis(
         &module,
         funcname,
         vec![
@@ -534,13 +548,14 @@ fn overwrite() {
         ],
         HashMap::new(),
     );
+    let taintmap = mts.get_function_taint_map(funcname);
     assert_eq!(
         taintmap.get(&Name::from(4)),
         Some(&TaintedType::UntaintedValue)
     );
 
     // with the second argument tainted
-    let taintmap = get_taint_map_for_function(
+    let mts = do_taint_analysis(
         &module,
         funcname,
         vec![
@@ -549,6 +564,7 @@ fn overwrite() {
         ],
         HashMap::new(),
     );
+    let taintmap = mts.get_function_taint_map(funcname);
     assert_eq!(
         taintmap.get(&Name::from(4)),
         Some(&TaintedType::TaintedValue)
@@ -561,7 +577,7 @@ fn load_and_store_mult() {
     let module = get_memory_module();
 
     // with both arguments untainted
-    let taintmap = get_taint_map_for_function(
+    let mts = do_taint_analysis(
         &module,
         funcname,
         vec![
@@ -570,13 +586,14 @@ fn load_and_store_mult() {
         ],
         HashMap::new(),
     );
+    let taintmap = mts.get_function_taint_map(funcname);
     assert_eq!(
         taintmap.get(&Name::from(7)),
         Some(&TaintedType::UntaintedValue)
     );
 
     // with the second argument tainted
-    let taintmap = get_taint_map_for_function(
+    let mts = do_taint_analysis(
         &module,
         funcname,
         vec![
@@ -585,6 +602,7 @@ fn load_and_store_mult() {
         ],
         HashMap::new(),
     );
+    let taintmap = mts.get_function_taint_map(funcname);
     assert_eq!(
         taintmap.get(&Name::from(7)),
         Some(&TaintedType::TaintedValue)
@@ -597,7 +615,7 @@ fn array() {
     let module = get_memory_module();
 
     // with both arguments untainted
-    let taintmap = get_taint_map_for_function(
+    let mts = do_taint_analysis(
         &module,
         funcname,
         vec![
@@ -606,13 +624,14 @@ fn array() {
         ],
         HashMap::new(),
     );
+    let taintmap = mts.get_function_taint_map(funcname);
     assert_eq!(
         taintmap.get(&Name::from(6)),
         Some(&TaintedType::UntaintedValue)
     );
 
     // with the second argument tainted
-    let taintmap = get_taint_map_for_function(
+    let mts = do_taint_analysis(
         &module,
         funcname,
         vec![
@@ -621,6 +640,7 @@ fn array() {
         ],
         HashMap::new(),
     );
+    let taintmap = mts.get_function_taint_map(funcname);
     assert_eq!(
         taintmap.get(&Name::from(6)),
         Some(&TaintedType::TaintedValue)
@@ -629,7 +649,7 @@ fn array() {
     // with %5 tainted but %3 not. In this case we want to ensure that the
     // (tainted) store to %0 doesn't affect the load from %4, which should
     // remain untainted.
-    let taintmap = get_taint_map_for_function(
+    let mts = do_taint_analysis(
         &module,
         funcname,
         vec![
@@ -638,6 +658,7 @@ fn array() {
         ],
         std::iter::once((Name::from(5), TaintedType::TaintedValue)).collect(),
     );
+    let taintmap = mts.get_function_taint_map(funcname);
     assert_eq!(
         taintmap.get(&Name::from(6)),
         Some(&TaintedType::TaintedValue)

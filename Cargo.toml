@@ -8,4 +8,4 @@ edition = "2018"
 
 [dependencies]
 either = "1.5.3"
-llvm-ir = { git = "https://github.com/cdisselkoen/llvm-ir" }
+llvm-ir = { git = "https://github.com/cdisselkoen/llvm-ir", features = ["llvm-10"] }

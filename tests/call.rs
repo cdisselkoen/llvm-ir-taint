@@ -14,7 +14,7 @@ fn simple_call() {
     let module = get_module();
 
     // test basic taint tracking through a called function
-    let mts = get_taint_maps_for_function(
+    let mts = do_taint_analysis(
         &module,
         "simple_caller",
         vec![TaintedType::TaintedValue],
@@ -45,7 +45,7 @@ fn nested_call() {
     let module = get_module();
 
     // test basic taint tracking through two calls
-    let mts = get_taint_maps_for_function(
+    let mts = do_taint_analysis(
         &module,
         "nested_caller",
         vec![TaintedType::TaintedValue, TaintedType::UntaintedValue],
@@ -78,7 +78,7 @@ fn call_in_loop() {
     // untainted function input, but manually mark %13 as tainted.
     // on the first pass, the call appears to have untainted arguments.
     // but on the second pass, it becomes clear that the call has tainted arguments.
-    let mts = get_taint_maps_for_function(
+    let mts = do_taint_analysis(
         &module,
         "caller_with_loop",
         vec![TaintedType::UntaintedValue],
@@ -111,15 +111,17 @@ fn call_in_loop() {
 #[test]
 fn recursive_call() {
     let module = get_module();
+    let funcname = "recursive_simple";
 
     // untainted function input, but we mark %2 tainted, so the function input
     // should be marked tainted at fixpoint
-    let taintmap = get_taint_map_for_function(
+    let mts = do_taint_analysis(
         &module,
-        "recursive_simple",
+        funcname,
         vec![TaintedType::UntaintedValue],
         std::iter::once((Name::from(2), TaintedType::TaintedValue)).collect(),
     );
+    let taintmap = mts.get_function_taint_map(funcname);
     assert_eq!(
         taintmap.get(&Name::from(0)),
         Some(&TaintedType::TaintedValue)
@@ -129,15 +131,17 @@ fn recursive_call() {
 #[test]
 fn mutually_recursive_call() {
     let module = get_module();
+    let funcname = "mutually_recursive_a";
 
     // untainted function input, but we mark %4 tainted, so after recursion,
     // the function input should eventually be marked tainted
-    let taintmap = get_taint_map_for_function(
+    let mts = do_taint_analysis(
         &module,
-        "mutually_recursive_a",
+        funcname,
         vec![TaintedType::UntaintedValue],
         std::iter::once((Name::from(4), TaintedType::TaintedValue)).collect(),
     );
+    let taintmap = mts.get_function_taint_map(funcname);
     assert_eq!(
         taintmap.get(&Name::from(0)),
         Some(&TaintedType::TaintedValue)

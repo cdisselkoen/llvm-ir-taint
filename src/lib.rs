@@ -13,35 +13,23 @@ use std::rc::Rc;
 /// function to analyze, returns a `ModuleTaintState` with data on that function
 /// and all functions it calls, directly or transitively.
 ///
-/// `args`: the `TaintedType` to assign to each function argument.
+/// `args`: the `TaintedType` to assign to each argument of the start function.
 ///
 /// `nonargs`: (optional) Initial `TaintedType`s for any nonargument variables in
-/// the function. For instance, you can use this to set some variable in the
-/// middle of the function to tainted. If this map is empty, all `TaintedType`s
-/// will simply be inferred normally from the argument `TaintedType`s.
-pub fn get_taint_map_for_function(
-    module: &Module,
-    fn_name: &str,
-    args: Vec<TaintedType>,
-    nonargs: HashMap<Name, TaintedType>,
-) -> HashMap<Name, TaintedType> {
-    let mts = get_taint_maps_for_function(module, fn_name, args, nonargs);
-    mts.get_function_taint_map(fn_name)
-}
-
-/// Like `get_taint_map_for_function`, but returns a `ModuleTaintState`
-/// containing info on that function and all functions it calls, directly or
-/// transitively.
-pub fn get_taint_maps_for_function<'m>(
+/// the start function. For instance, you can use this to set some variable in
+/// the middle of the function to tainted. If this map is empty, all
+/// `TaintedType`s will simply be inferred normally from the argument
+/// `TaintedType`s.
+pub fn do_taint_analysis<'m>(
     module: &'m Module,
-    fn_name: &str,
+    start_fn_name: &str,
     args: Vec<TaintedType>,
     nonargs: HashMap<Name, TaintedType>,
 ) -> ModuleTaintState<'m> {
-    let f = module.get_func_by_name(fn_name).unwrap_or_else(|| {
+    let f = module.get_func_by_name(start_fn_name).unwrap_or_else(|| {
         panic!(
             "Failed to find function named {:?} in the given module",
-            fn_name
+            start_fn_name
         )
     });
     assert_eq!(args.len(), f.parameters.len());
@@ -80,6 +68,10 @@ pub enum TaintedType {
     TaintedPointer(Rc<RefCell<TaintedType>>),
     /// A struct, with the given element types
     Struct(Vec<Rc<RefCell<TaintedType>>>),
+    /// A named struct, with the given name. To get the actual type of the named
+    /// struct's contents, look in `named_struct_types` in the
+    /// `ModuleTaintState`. (This avoids infinite recursion in `TaintedType`.)
+    NamedStruct(String),
     /// An untainted function pointer
     UntaintedFnPtr,
     /// A tainted function pointer
@@ -111,26 +103,19 @@ impl TaintedType {
     /// Produce the equivalent (untainted) `TaintedType` for a given LLVM type.
     /// Pointers will point to fresh `TaintedType`s to represent their element
     /// types; they will be assumed not to point to existing variables.
-    pub fn from_llvm_type(llvm_ty: &Type, module: &Module) -> Self {
+    pub fn from_llvm_type(llvm_ty: &Type) -> Self {
         match llvm_ty {
             Type::IntegerType { .. } => TaintedType::UntaintedValue,
             Type::PointerType { pointee_type, .. } => {
-                TaintedType::untainted_ptr_to(TaintedType::from_llvm_type(&pointee_type, module))
+                TaintedType::untainted_ptr_to(TaintedType::from_llvm_type(&pointee_type))
             },
             Type::FPType(_) => TaintedType::UntaintedValue,
-            Type::VectorType { element_type, .. } => TaintedType::from_llvm_type(&element_type, module),
-            Type::ArrayType { element_type, .. } => TaintedType::from_llvm_type(&element_type, module),
+            Type::VectorType { element_type, .. } => TaintedType::from_llvm_type(&element_type),
+            Type::ArrayType { element_type, .. } => TaintedType::from_llvm_type(&element_type),
             Type::StructType { element_types, .. } => {
-                TaintedType::struct_of(element_types.iter().map(|ty| TaintedType::from_llvm_type(ty, module)))
+                TaintedType::struct_of(element_types.iter().map(|ty| TaintedType::from_llvm_type(ty)))
             },
-            Type::NamedStructType { name } => match module.types.named_struct_def(name) {
-                None => panic!("TaintedType::from_llvm_type on unknown named struct: name {:?}", name),
-                Some(NamedStructDef::Opaque) => panic!(
-                    "TaintedType::from_llvm_type on an opaque struct named {:?}",
-                    name
-                ),
-                Some(NamedStructDef::Defined(ty)) => TaintedType::from_llvm_type(&ty, module),
-            },
+            Type::NamedStructType { name } => TaintedType::NamedStruct(name.into()),
             Type::FuncType { .. } => TaintedType::UntaintedFnPtr,
             Type::X86_MMXType => TaintedType::UntaintedValue,
             Type::MetadataType => TaintedType::UntaintedValue,
@@ -146,40 +131,23 @@ impl TaintedType {
         match constant {
             Constant::Int { .. } => TaintedType::UntaintedValue,
             Constant::Float(_) => TaintedType::UntaintedValue,
-            Constant::Null(ty) => TaintedType::from_llvm_type(ty, module),
-            Constant::AggregateZero(ty) => TaintedType::from_llvm_type(ty, module),
+            Constant::Null(ty) => TaintedType::from_llvm_type(ty),
+            Constant::AggregateZero(ty) => TaintedType::from_llvm_type(ty),
             Constant::Struct { values, .. } => {
                 TaintedType::struct_of(values.iter().map(|v| Self::from_constant(v, module)))
             },
-            Constant::Array { element_type, .. } => TaintedType::from_llvm_type(element_type, module),
+            Constant::Array { element_type, .. } => TaintedType::from_llvm_type(element_type),
             Constant::Vector(vec) => {
                 // all elements should be the same type, so we do the type of the first one
                 TaintedType::from_llvm_type(
-                    &module.type_of(vec.get(0).expect("Constant::Vector should not be empty")),
-                    module,
+                    &module.type_of(vec.get(0).expect("Constant::Vector should not be empty"))
                 )
             },
-            Constant::Undef(ty) => TaintedType::from_llvm_type(ty, module),
+            Constant::Undef(ty) => TaintedType::from_llvm_type(ty),
             Constant::GlobalReference { ty, .. } => {
-                TaintedType::untainted_ptr_to(TaintedType::from_llvm_type(ty, module))
+                TaintedType::untainted_ptr_to(TaintedType::from_llvm_type(ty))
             },
             _ => unimplemented!("TaintedType::from_constant on {:?}", constant),
-        }
-    }
-
-    /// Is this type one of the tainted types
-    pub fn is_tainted(&self) -> bool {
-        match self {
-            TaintedType::UntaintedValue => false,
-            TaintedType::TaintedValue => true,
-            TaintedType::UntaintedPointer(_) => false,
-            TaintedType::TaintedPointer(_) => true,
-            TaintedType::Struct(elements) => {
-                // a struct is tainted if any of its elements are
-                elements.iter().any(|e| e.borrow().is_tainted())
-            },
-            TaintedType::UntaintedFnPtr => false,
-            TaintedType::TaintedFnPtr => true,
         }
     }
 
@@ -192,6 +160,7 @@ impl TaintedType {
             TaintedType::Struct(elements) => {
                 TaintedType::struct_of(elements.iter().map(|e| e.borrow().to_tainted()))
             },
+            TaintedType::NamedStruct(_) => unimplemented!("to_tainted on a named struct"),
             TaintedType::UntaintedFnPtr => TaintedType::TaintedFnPtr,
             TaintedType::TaintedFnPtr => TaintedType::TaintedFnPtr,
         }
@@ -241,6 +210,13 @@ impl TaintedType {
                     ))
                 }
             },
+            (NamedStruct(name1), NamedStruct(name2)) => {
+                if name1 == name2 {
+                    Ok(Self::NamedStruct(name1.clone()))
+                } else {
+                    Err(format!("join: type mismatch: struct named {:?} with struct named {:?}", name1, name2))
+                }
+            },
             (UntaintedFnPtr, UntaintedFnPtr) => Ok(UntaintedFnPtr),
             (UntaintedFnPtr, TaintedFnPtr) => Ok(TaintedFnPtr),
             (TaintedFnPtr, UntaintedFnPtr) => Ok(TaintedFnPtr),
@@ -266,8 +242,8 @@ impl<'m> FunctionTaintState<'m> {
         }
     }
 
-    fn into_taint_map(self) -> HashMap<Name, TaintedType> {
-        self.map
+    pub fn get_taint_map(&self) -> &HashMap<Name, TaintedType> {
+        &self.map
     }
 
     /// Get the `TaintedType` of the given `Operand`, according to the current state.
@@ -292,7 +268,7 @@ impl<'m> FunctionTaintState<'m> {
                     // be corrected on a future pass. (And we'll definitely have
                     // a future pass, because that variable becoming defined
                     // counts as a change for the fixpoint algorithm.)
-                    TaintedType::from_llvm_type(&self.module.type_of(op), &self.module)
+                    TaintedType::from_llvm_type(&self.module.type_of(op))
                 },
             },
         }
@@ -314,7 +290,7 @@ impl<'m> FunctionTaintState<'m> {
                 "is_scalar_operand_tainted(): operand has pointer type: {:?}",
                 op
             )),
-            TaintedType::Struct(_) => Err(format!(
+            TaintedType::Struct(_) | TaintedType::NamedStruct(_) => Err(format!(
                 "is_scalar_operand_tainted(): operand has struct type: {:?}",
                 op
             )),
@@ -390,10 +366,21 @@ pub struct ModuleTaintState<'m> {
     /// Map from function name to the `FunctionSummary` for that function
     fn_summaries: HashMap<String, FunctionSummary>,
 
+    /// Map from the name of a named struct, to the (currently believed) type for
+    /// that struct's contents.
+    named_struct_types: HashMap<String, TaintedType>,
+
     /// Map from function name to the names of its callers.
     /// Whenever a function summary changes, we add its callers to the worklist
     /// because the new summary could affect inferred types in its callers.
     callers: HashMap<String, HashSet<&'m str>>,
+
+    /// Map from the name of a named struct, to the names of functions that use
+    /// that named struct.
+    /// Whenever the type of a named struct changes, we add all of the functions
+    /// that use it to the worklist, because the new type could affect inferred
+    /// types in those functions.
+    named_struct_users: HashMap<String, HashSet<&'m str>>,
 
     /// Set of functions which need to be processed again because there's been a
     /// change to taint information which might be relevant to them
@@ -415,16 +402,15 @@ impl FunctionSummary {
     fn new_untainted(
         param_llvm_types: impl IntoIterator<Item = TypeRef>,
         ret_llvm_type: &Type,
-        module: &Module,
     ) -> Self {
         Self {
             params: param_llvm_types
                 .into_iter()
-                .map(|ty| TaintedType::from_llvm_type(&ty, module))
+                .map(|ty| TaintedType::from_llvm_type(&ty))
                 .collect(),
             ret: match ret_llvm_type {
                 Type::VoidType => None,
-                ty => Some(TaintedType::from_llvm_type(ty, module)),
+                ty => Some(TaintedType::from_llvm_type(ty)),
             },
         }
     }
@@ -510,7 +496,9 @@ impl<'m> ModuleTaintState<'m> {
             ))
             .collect(),
             fn_summaries: HashMap::new(),
+            named_struct_types: HashMap::new(),
             callers: HashMap::new(),
+            named_struct_users: HashMap::new(),
             fn_worklist: std::iter::once(start_fn).collect(),
             cur_fn: start_fn,
         }
@@ -518,17 +506,16 @@ impl<'m> ModuleTaintState<'m> {
 
     /// Given a function name, returns a map from variable name to `TaintedType`
     /// for all the variables in that function.
-    pub fn get_function_taint_map(&self, fn_name: &str) -> HashMap<Name, TaintedType> {
+    pub fn get_function_taint_map(&self, fn_name: &str) -> &HashMap<Name, TaintedType> {
         self.fn_taint_states
             .get(fn_name)
-            .cloned()
             .unwrap_or_else(|| {
                 panic!(
                     "get_function_taint_map: no taint map found for function {:?}",
                     fn_name
                 )
             })
-            .into_taint_map()
+            .get_taint_map()
     }
 
     /// Run the fixpoint algorithm to completion.
@@ -586,6 +573,59 @@ impl<'m> ModuleTaintState<'m> {
             })
     }
 
+    /// Get the `TaintedType` for the given struct name.
+    /// Marks the current function as a user of this named struct.
+    /// Creates an untainted `TaintedType` for this named struct if no type
+    /// previously existed for it.
+    fn get_or_create_named_struct_type(&mut self, struct_name: String) -> &TaintedType {
+        let module = self.module; // this is for the borrow checker - allows us to access `module` without needing to borrow `self`
+        self.named_struct_users.entry(struct_name.clone()).or_default().insert(self.cur_fn.into());
+        self.named_struct_types.entry(struct_name.clone()).or_insert_with(|| {
+            match module.types.named_struct_def(&struct_name) {
+                None => panic!("get_or_create_named_struct_type on unknown named struct: name {:?}", &struct_name),
+                Some(NamedStructDef::Opaque) => panic!(
+                    "get_or_create_named_struct_type on an opaque struct named {:?}",
+                    &struct_name
+                ),
+                Some(NamedStructDef::Defined(ty)) => TaintedType::from_llvm_type(&ty),
+            }
+        })
+    }
+
+    /// Get the `TaintedType` for the given struct name.
+    //
+    // This function is intended only for external users. Internal users should
+    // prefer `get_or_create_named_struct_type`, which also updates the
+    // named_struct_users as necessary.
+    pub fn get_named_struct_type(&self, struct_name: &str) -> &TaintedType {
+        self.named_struct_types.get(struct_name).unwrap_or_else(|| panic!("get_named_struct_type: unknown named struct: name {:?}", struct_name))
+    }
+
+    /// Is this type one of the tainted types
+    pub fn is_type_tainted(&mut self, ty: &TaintedType) -> bool {
+        match ty {
+            TaintedType::UntaintedValue => false,
+            TaintedType::TaintedValue => true,
+            TaintedType::UntaintedPointer(_) => false,
+            TaintedType::TaintedPointer(_) => true,
+            TaintedType::Struct(elements) => {
+                // a struct is tainted if any of its elements are
+                elements.iter().any(|e| self.is_type_tainted(&e.borrow()))
+            },
+            TaintedType::NamedStruct(name) => {
+                let inner_ty = self.get_or_create_named_struct_type(name.clone()).clone();
+                self.is_type_tainted(&inner_ty)
+            },
+            TaintedType::UntaintedFnPtr => false,
+            TaintedType::TaintedFnPtr => true,
+        }
+    }
+
+    /// Get the `TaintedType` of a variable by name
+    pub fn get_var_type(&self, funcname: &str, varname: &Name) -> &TaintedType {
+        &self.fn_taint_states[funcname].map[varname]
+    }
+
     /// Process the given `Function`.
     ///
     /// Returns `true` if a change was made to the function's taint state, or `false` if not.
@@ -602,7 +642,7 @@ impl<'m> ModuleTaintState<'m> {
                     f.parameters
                         .iter()
                         .map(|p| {
-                            (p.name.clone(), TaintedType::from_llvm_type(&module.type_of(p), &module))
+                            (p.name.clone(), TaintedType::from_llvm_type(&module.type_of(p)))
                         })
                         .collect(),
                     module,
@@ -617,7 +657,6 @@ impl<'m> ModuleTaintState<'m> {
                 ventry.insert(FunctionSummary::new_untainted(
                     param_llvm_types,
                     ret_llvm_type,
-                    module,
                 ))
             },
             Entry::Occupied(oentry) => oentry.into_mut(),
@@ -690,22 +729,21 @@ impl<'m> ModuleTaintState<'m> {
                     cur_fn.update_var_taintedtype(uop.get_result().clone(), op_ty)
                 },
                 Instruction::BitCast(bc) => {
-                    let module = self.module;
                     let cur_fn = self.get_cur_fn();
                     let from_ty = cur_fn.get_type_of_operand(&bc.operand);
                     let result_ty = match from_ty {
                         TaintedType::UntaintedValue | TaintedType::UntaintedFnPtr => {
-                            TaintedType::from_llvm_type(&bc.to_type, module)
+                            TaintedType::from_llvm_type(&bc.to_type)
                         },
                         TaintedType::TaintedValue | TaintedType::TaintedFnPtr => {
-                            TaintedType::from_llvm_type(&bc.to_type, module).to_tainted()
+                            TaintedType::from_llvm_type(&bc.to_type).to_tainted()
                         },
                         TaintedType::UntaintedPointer(rc) => match bc.to_type.as_ref() {
                             Type::PointerType { pointee_type, .. } => {
-                                let result_pointee_type = if rc.borrow().is_tainted() {
-                                    TaintedType::from_llvm_type(&pointee_type, module).to_tainted()
+                                let result_pointee_type = if self.is_type_tainted(&rc.borrow()) {
+                                    TaintedType::from_llvm_type(&pointee_type).to_tainted()
                                 } else {
-                                    TaintedType::from_llvm_type(&pointee_type, module)
+                                    TaintedType::from_llvm_type(&pointee_type)
                                 };
                                 TaintedType::untainted_ptr_to(result_pointee_type)
                             },
@@ -713,24 +751,27 @@ impl<'m> ModuleTaintState<'m> {
                         },
                         TaintedType::TaintedPointer(rc) => match bc.to_type.as_ref() {
                             Type::PointerType { pointee_type, .. } => {
-                                let result_pointee_type = if rc.borrow().is_tainted() {
-                                    TaintedType::from_llvm_type(&pointee_type, module).to_tainted()
+                                let result_pointee_type = if self.is_type_tainted(&rc.borrow()) {
+                                    TaintedType::from_llvm_type(&pointee_type).to_tainted()
                                 } else {
-                                    TaintedType::from_llvm_type(&pointee_type, module)
+                                    TaintedType::from_llvm_type(&pointee_type)
                                 };
                                 TaintedType::tainted_ptr_to(result_pointee_type)
                             },
                             _ => return Err("Bitcast from pointer to non-pointer".into()), // my reading of the LLVM 9 LangRef disallows this
                         },
                         from_ty @ TaintedType::Struct(_) => {
-                            if from_ty.is_tainted() {
-                                TaintedType::from_llvm_type(&bc.to_type, module).to_tainted()
+                            if self.is_type_tainted(&from_ty) {
+                                TaintedType::from_llvm_type(&bc.to_type).to_tainted()
                             } else {
-                                TaintedType::from_llvm_type(&bc.to_type, module)
+                                TaintedType::from_llvm_type(&bc.to_type)
                             }
                         },
+                        TaintedType::NamedStruct(name) => {
+                            self.get_or_create_named_struct_type(name).clone()
+                        },
                     };
-                    cur_fn.update_var_taintedtype(bc.get_result().clone(), result_ty)
+                    self.get_cur_fn().update_var_taintedtype(bc.get_result().clone(), result_ty)
                 },
                 Instruction::ExtractElement(ee) => {
                     let cur_fn = self.get_cur_fn();
@@ -764,12 +805,12 @@ impl<'m> ModuleTaintState<'m> {
                     let cur_fn = self.get_cur_fn();
                     let ptr_to_struct =
                         TaintedType::untainted_ptr_to(cur_fn.get_type_of_operand(&ev.aggregate));
-                    let element_ptr_ty = get_element_ptr(&ptr_to_struct, &ev.indices)?;
+                    let element_ptr_ty = self.get_element_ptr(&ptr_to_struct, &ev.indices)?;
                     let element_ty = match element_ptr_ty {
                         TaintedType::UntaintedPointer(rc) => rc.borrow().clone(),
                         _ => return Err("ExtractValue: expected get_element_ptr to return an UntaintedPointer here".into()),
                     };
-                    cur_fn.update_var_taintedtype(ev.get_result().clone(), element_ty)
+                    self.get_cur_fn().update_var_taintedtype(ev.get_result().clone(), element_ty)
                 },
                 Instruction::InsertValue(iv) => {
                     let cur_fn = self.get_cur_fn();
@@ -783,14 +824,12 @@ impl<'m> ModuleTaintState<'m> {
                     cur_fn.update_var_taintedtype(iv.get_result().clone(), aggregate)
                 },
                 Instruction::Alloca(alloca) => {
-                    let module = self.module;
                     let cur_fn = self.get_cur_fn();
                     let result_ty = if cur_fn.is_scalar_operand_tainted(&alloca.num_elements)? {
                         TaintedType::TaintedValue
                     } else {
                         TaintedType::untainted_ptr_to(TaintedType::from_llvm_type(
                             &alloca.allocated_type,
-                            module,
                         ))
                     };
                     cur_fn.update_var_taintedtype(alloca.get_result().clone(), result_ty)
@@ -807,7 +846,7 @@ impl<'m> ModuleTaintState<'m> {
                         TaintedType::UntaintedFnPtr | TaintedType::TaintedFnPtr => {
                             return Err("Loading from a function pointer".into());
                         },
-                        TaintedType::Struct(_) => {
+                        TaintedType::Struct(_) | TaintedType::NamedStruct(_) => {
                             return Err(format!(
                                 "Load: address is not a pointer: {:?}",
                                 &load.address
@@ -832,7 +871,7 @@ impl<'m> ModuleTaintState<'m> {
                         TaintedType::UntaintedFnPtr | TaintedType::TaintedFnPtr => {
                             Err("Storing to a function pointer".into())
                         },
-                        TaintedType::Struct(_) => Err(format!(
+                        TaintedType::Struct(_) | TaintedType::NamedStruct(_) => Err(format!(
                             "Store: address is not a pointer: {:?}",
                             &store.address
                         )),
@@ -849,9 +888,9 @@ impl<'m> ModuleTaintState<'m> {
                 Instruction::Fence(_) => Ok(false),
                 Instruction::GetElementPtr(gep) => {
                     let cur_fn = self.get_cur_fn();
-                    let result_ty =
-                        get_element_ptr(&cur_fn.get_type_of_operand(&gep.address), &gep.indices)?;
-                    cur_fn.update_var_taintedtype(gep.get_result().clone(), result_ty)
+                    let ptr = cur_fn.get_type_of_operand(&gep.address);
+                    let result_ty = self.get_element_ptr(&ptr, &gep.indices)?;
+                    self.get_cur_fn().update_var_taintedtype(gep.get_result().clone(), result_ty)
                 },
                 Instruction::PtrToInt(pti) => {
                     let cur_fn = self.get_cur_fn();
@@ -868,7 +907,7 @@ impl<'m> ModuleTaintState<'m> {
                         TaintedType::TaintedValue => {
                             Err(format!("PtrToInt on an TaintedValue: {:?}", &pti.operand))
                         },
-                        TaintedType::Struct(_) => {
+                        TaintedType::Struct(_) | TaintedType::NamedStruct(_) => {
                             Err(format!("PtrToInt on a struct: {:?}", &pti.operand))
                         },
                     }
@@ -980,7 +1019,6 @@ impl<'m> ModuleTaintState<'m> {
                 ventry.insert(FunctionSummary::new_untainted(
                     call.arguments.iter().map(|(arg, _)| module.type_of(arg)),
                     &module.type_of(call),
-                    module,
                 ))
             },
         };
@@ -1067,6 +1105,126 @@ impl<'m> ModuleTaintState<'m> {
             _ => unimplemented!("terminator {:?}", term),
         }
     }
+
+    fn get_element_ptr<'a, 'b, I: Index + 'b>(
+        &mut self,
+        parent_ptr: &'a TaintedType,
+        indices: impl IntoIterator<Item = &'b I>,
+    ) -> Result<TaintedType, String> {
+        self._get_element_ptr(parent_ptr, indices.into_iter().peekable())
+    }
+
+    fn _get_element_ptr<'a, 'b, I: Index + 'b>(
+        &mut self,
+        parent_ptr: &'a TaintedType,
+        mut indices: std::iter::Peekable<impl Iterator<Item = &'b I>>,
+    ) -> Result<TaintedType, String> {
+        // we 'pop' an index from the list. This represents choosing an element of
+        // the "array" pointed to by the pointer.
+        let _index = match indices.next() {
+            Some(index) => index,
+            None => return Err("get_element_ptr: called with no indices".into()),
+        };
+        // now the rest of this is just for dealing with subsequent indices
+        match parent_ptr {
+            TaintedType::UntaintedValue | TaintedType::TaintedValue => {
+                Err("get_element_ptr: address is not a pointer, or too many indices".into())
+            },
+            TaintedType::UntaintedFnPtr | TaintedType::TaintedFnPtr => {
+                Err("get_element_ptr on a function pointer".into())
+            },
+            TaintedType::Struct(_) | TaintedType::NamedStruct(_) => {
+                Err("get_element_ptr: address is not a pointer, or too many indices".into())
+            },
+            TaintedType::UntaintedPointer(rc) | TaintedType::TaintedPointer(rc) => {
+                let pointee: &TaintedType = &rc.borrow();
+                match pointee {
+                    TaintedType::TaintedValue | TaintedType::UntaintedValue => {
+                        // We expect that indices.peek() would give None in this
+                        // case. However, there may be an extra index due to
+                        // selecting an element of a first-class array or vector
+                        // (which are TaintedValue or UntaintedValue in our type
+                        // system). So we just ignore any extra indices.
+                        if self.is_type_tainted(parent_ptr) {
+                            Ok(TaintedType::TaintedPointer(rc.clone()))
+                        } else {
+                            Ok(TaintedType::UntaintedPointer(rc.clone()))
+                        }
+                    },
+                    TaintedType::TaintedFnPtr | TaintedType::UntaintedFnPtr => {
+                        match indices.peek() {
+                            None if self.is_type_tainted(parent_ptr) => {
+                                Ok(TaintedType::TaintedPointer(rc.clone()))
+                            },
+                            None => {
+                                Ok(TaintedType::UntaintedPointer(rc.clone()))
+                            },
+                            Some(_) => {
+                                Err("get_element_ptr on a function pointer, or too many indices".into())
+                            },
+                        }
+                    },
+                    inner_ptr @ TaintedType::TaintedPointer(_)
+                    | inner_ptr @ TaintedType::UntaintedPointer(_) => {
+                        // We'll taint the resulting element ptr depending on the
+                        // taint status of the inner_ptr, ignoring the taint status
+                        // of the parent_ptr. I believe this is correct for most use
+                        // cases.
+                        match indices.peek() {
+                            None if self.is_type_tainted(inner_ptr) => {
+                                Ok(TaintedType::TaintedPointer(rc.clone()))
+                            },
+                            None => Ok(TaintedType::UntaintedPointer(rc.clone())),
+                            Some(_) => self._get_element_ptr(inner_ptr, indices),
+                        }
+                    },
+                    TaintedType::Struct(_) | TaintedType::NamedStruct(_) => {
+                        let elements = match pointee {
+                            TaintedType::Struct(elements) => elements,
+                            TaintedType::NamedStruct(name) => match self.get_or_create_named_struct_type(name.clone()) {
+                                TaintedType::Struct(elements) => elements,
+                                ty => panic!("expected get_or_create_named_struct_type to return TaintedType::Struct; got {:?}", ty),
+                            },
+                            _ => panic!("Only expected Struct or NamedStruct case here"),
+                        };
+                        match indices.next() {
+                            None => {
+                                // this case is like the TaintedValue / UntaintedValue
+                                // case. The return type is a pointer-to-struct, we
+                                // just picked a particular struct from an array of
+                                // structs.
+                                Ok(parent_ptr.clone())
+                            },
+                            Some(index) => {
+                                // in this case, the new `index` is actually selecting an
+                                // element within the struct
+                                let index = index.as_constant().expect(
+                                    "get_element_ptr: indexing into a struct at non-Constant index",
+                                );
+                                let pointee = elements.get(index as usize).ok_or_else(|| {
+                                    format!(
+                                        "get_element_ptr: index out of range: index {:?} in struct {:?}",
+                                        index, pointee
+                                    )
+                                })?;
+                                let pointee = pointee.clone(); // release the borrow of `self` due to `elements`
+                                match indices.peek() {
+                                    None => {
+                                        if self.is_type_tainted(parent_ptr) {
+                                            Ok(TaintedType::TaintedPointer(pointee))
+                                        } else {
+                                            Ok(TaintedType::UntaintedPointer(pointee))
+                                        }
+                                    },
+                                    Some(_) => self._get_element_ptr(&pointee.borrow(), indices),
+                                }
+                            },
+                        }
+                    },
+                }
+            },
+        }
+    }
 }
 
 /// Trait representing things which can be used as struct/array indices.
@@ -1111,115 +1269,6 @@ impl Index for u64 {
 impl Index for &u64 {
     fn as_constant(&self) -> Option<u64> {
         Some(**self)
-    }
-}
-
-fn get_element_ptr<'a, 'b, I: Index + 'b>(
-    parent_ptr: &'a TaintedType,
-    indices: impl IntoIterator<Item = &'b I>,
-) -> Result<TaintedType, String> {
-    _get_element_ptr(parent_ptr, indices.into_iter().peekable())
-}
-
-fn _get_element_ptr<'a, 'b, I: Index + 'b>(
-    parent_ptr: &'a TaintedType,
-    mut indices: std::iter::Peekable<impl Iterator<Item = &'b I>>,
-) -> Result<TaintedType, String> {
-    // we 'pop' an index from the list. This represents choosing an element of
-    // the "array" pointed to by the pointer.
-    let _index = match indices.next() {
-        Some(index) => index,
-        None => return Err("get_element_ptr: called with no indices".into()),
-    };
-    // now the rest of this is just for dealing with subsequent indices
-    match parent_ptr {
-        TaintedType::UntaintedValue | TaintedType::TaintedValue => {
-            Err("get_element_ptr: address is not a pointer, or too many indices".into())
-        },
-        TaintedType::UntaintedFnPtr | TaintedType::TaintedFnPtr => {
-            Err("get_element_ptr on a function pointer".into())
-        },
-        TaintedType::Struct(_) => {
-            Err("get_element_ptr: address is not a pointer, or too many indices".into())
-        },
-        TaintedType::UntaintedPointer(rc) | TaintedType::TaintedPointer(rc) => {
-            let pointee: &TaintedType = &rc.borrow();
-            match pointee {
-                TaintedType::TaintedValue | TaintedType::UntaintedValue => {
-                    // We expect that indices.peek() would give None in this
-                    // case. However, there may be an extra index due to
-                    // selecting an element of a first-class array or vector
-                    // (which are TaintedValue or UntaintedValue in our type
-                    // system). So we just ignore any extra indices.
-                    if parent_ptr.is_tainted() {
-                        Ok(TaintedType::TaintedPointer(rc.clone()))
-                    } else {
-                        Ok(TaintedType::UntaintedPointer(rc.clone()))
-                    }
-                },
-                TaintedType::TaintedFnPtr | TaintedType::UntaintedFnPtr => {
-                    match indices.peek() {
-                        None if parent_ptr.is_tainted() => {
-                            Ok(TaintedType::TaintedPointer(rc.clone()))
-                        },
-                        None => {
-                            Ok(TaintedType::UntaintedPointer(rc.clone()))
-                        },
-                        Some(_) => {
-                            Err("get_element_ptr on a function pointer, or too many indices".into())
-                        },
-                    }
-                },
-                inner_ptr @ TaintedType::TaintedPointer(_)
-                | inner_ptr @ TaintedType::UntaintedPointer(_) => {
-                    // We'll taint the resulting element ptr depending on the
-                    // taint status of the inner_ptr, ignoring the taint status
-                    // of the parent_ptr. I believe this is correct for most use
-                    // cases.
-                    match indices.peek() {
-                        None if inner_ptr.is_tainted() => {
-                            Ok(TaintedType::TaintedPointer(rc.clone()))
-                        },
-                        None => Ok(TaintedType::UntaintedPointer(rc.clone())),
-                        Some(_) => _get_element_ptr(inner_ptr, indices),
-                    }
-                },
-                TaintedType::Struct(elements) => {
-                    match indices.next() {
-                        None => {
-                            // this case is like the TaintedValue / UntaintedValue
-                            // case. The return type is a pointer-to-struct, we
-                            // just picked a particular struct from an array of
-                            // structs.
-                            Ok(parent_ptr.clone())
-                        },
-                        Some(index) => {
-                            // in this case, the new `index` is actually selecting an
-                            // element within the struct
-                            let index = index.as_constant().expect(
-                                "get_element_ptr: indexing into a struct at non-Constant index",
-                            );
-                            let pointee = elements.get(index as usize).ok_or_else(|| {
-                                format!(
-                                    "get_element_ptr: index out of range: index {:?} in struct {:?}",
-                                    index, pointee
-                                )
-                            })?;
-                            match indices.peek() {
-                                None => {
-                                    if parent_ptr.is_tainted() {
-                                        Ok(TaintedType::TaintedPointer(pointee.clone()))
-                                    } else {
-                                        Ok(TaintedType::UntaintedPointer(pointee.clone()))
-                                    }
-                                },
-                                Some(_) => _get_element_ptr(&pointee.borrow(), indices),
-                            }
-                        },
-                    }
-                },
-            }
-        },
     }
 }
 
