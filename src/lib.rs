@@ -10,7 +10,7 @@ use std::fmt::Debug;
 use std::rc::Rc;
 
 /// The main function in this module. Given an LLVM module and the name of a
-/// function to analyze, returns a `ModuleTaintState` with data on that function
+/// function to analyze, returns a `ModuleTaintResult` with data on that function
 /// and all functions it calls, directly or transitively.
 ///
 /// `args`: the `TaintedType` to assign to each argument of the start function.
@@ -25,7 +25,7 @@ pub fn do_taint_analysis<'m>(
     start_fn_name: &str,
     args: Vec<TaintedType>,
     nonargs: HashMap<Name, TaintedType>,
-) -> ModuleTaintState<'m> {
+) -> ModuleTaintResult<'m> {
     let f = module.get_func_by_name(start_fn_name).unwrap_or_else(|| {
         panic!(
             "Failed to find function named {:?} in the given module",
@@ -43,6 +43,7 @@ pub fn do_taint_analysis<'m>(
         initial_taintmap.insert(name, ty);
     }
     ModuleTaintState::do_analysis(module, &f.name, initial_taintmap)
+        .into_module_taint_result()
 }
 
 /// The type system which we use for this analysis
@@ -69,8 +70,9 @@ pub enum TaintedType {
     /// A struct, with the given element types
     Struct(Vec<Rc<RefCell<TaintedType>>>),
     /// A named struct, with the given name. To get the actual type of the named
-    /// struct's contents, look in `named_struct_types` in the
-    /// `ModuleTaintState`. (This avoids infinite recursion in `TaintedType`.)
+    /// struct's contents, use `get_named_struct_type` in the `ModuleTaintState`
+    /// or `ModuleTaintResult`. (This avoids infinite recursion in
+    /// `TaintedType`.)
     NamedStruct(String),
     /// An untainted function pointer
     UntaintedFnPtr,
@@ -356,7 +358,7 @@ impl<'m> FunctionTaintState<'m> {
     }
 }
 
-pub struct ModuleTaintState<'m> {
+struct ModuleTaintState<'m> {
     /// llvm-ir `Module`
     module: &'m Module,
 
@@ -504,18 +506,11 @@ impl<'m> ModuleTaintState<'m> {
         }
     }
 
-    /// Given a function name, returns a map from variable name to `TaintedType`
-    /// for all the variables in that function.
-    pub fn get_function_taint_map(&self, fn_name: &str) -> &HashMap<Name, TaintedType> {
-        self.fn_taint_states
-            .get(fn_name)
-            .unwrap_or_else(|| {
-                panic!(
-                    "get_function_taint_map: no taint map found for function {:?}",
-                    fn_name
-                )
-            })
-            .get_taint_map()
+    fn into_module_taint_result(self) -> ModuleTaintResult<'m> {
+        ModuleTaintResult {
+            fn_taint_states: self.fn_taint_states,
+            named_struct_types: self.named_struct_types,
+        }
     }
 
     /// Run the fixpoint algorithm to completion.
@@ -577,28 +572,19 @@ impl<'m> ModuleTaintState<'m> {
     /// Marks the current function as a user of this named struct.
     /// Creates an untainted `TaintedType` for this named struct if no type
     /// previously existed for it.
-    fn get_or_create_named_struct_type(&mut self, struct_name: String) -> &TaintedType {
+    pub fn get_named_struct_type(&mut self, struct_name: String) -> &TaintedType {
         let module = self.module; // this is for the borrow checker - allows us to access `module` without needing to borrow `self`
         self.named_struct_users.entry(struct_name.clone()).or_default().insert(self.cur_fn.into());
         self.named_struct_types.entry(struct_name.clone()).or_insert_with(|| {
             match module.types.named_struct_def(&struct_name) {
-                None => panic!("get_or_create_named_struct_type on unknown named struct: name {:?}", &struct_name),
+                None => panic!("get_named_struct_type on unknown named struct: name {:?}", &struct_name),
                 Some(NamedStructDef::Opaque) => panic!(
-                    "get_or_create_named_struct_type on an opaque struct named {:?}",
+                    "get_named_struct_type on an opaque struct named {:?}",
                     &struct_name
                 ),
                 Some(NamedStructDef::Defined(ty)) => TaintedType::from_llvm_type(&ty),
             }
         })
-    }
-
-    /// Get the `TaintedType` for the given struct name.
-    //
-    // This function is intended only for external users. Internal users should
-    // prefer `get_or_create_named_struct_type`, which also updates the
-    // named_struct_users as necessary.
-    pub fn get_named_struct_type(&self, struct_name: &str) -> &TaintedType {
-        self.named_struct_types.get(struct_name).unwrap_or_else(|| panic!("get_named_struct_type: unknown named struct: name {:?}", struct_name))
     }
 
     /// Is this type one of the tainted types
@@ -613,17 +599,12 @@ impl<'m> ModuleTaintState<'m> {
                 elements.iter().any(|e| self.is_type_tainted(&e.borrow()))
             },
             TaintedType::NamedStruct(name) => {
-                let inner_ty = self.get_or_create_named_struct_type(name.clone()).clone();
+                let inner_ty = self.get_named_struct_type(name.clone()).clone();
                 self.is_type_tainted(&inner_ty)
             },
             TaintedType::UntaintedFnPtr => false,
             TaintedType::TaintedFnPtr => true,
         }
-    }
-
-    /// Get the `TaintedType` of a variable by name
-    pub fn get_var_type(&self, funcname: &str, varname: &Name) -> &TaintedType {
-        &self.fn_taint_states[funcname].map[varname]
     }
 
     /// Process the given `Function`.
@@ -768,7 +749,7 @@ impl<'m> ModuleTaintState<'m> {
                             }
                         },
                         TaintedType::NamedStruct(name) => {
-                            self.get_or_create_named_struct_type(name).clone()
+                            self.get_named_struct_type(name).clone()
                         },
                     };
                     self.get_cur_fn().update_var_taintedtype(bc.get_result().clone(), result_ty)
@@ -1181,9 +1162,9 @@ impl<'m> ModuleTaintState<'m> {
                     TaintedType::Struct(_) | TaintedType::NamedStruct(_) => {
                         let elements = match pointee {
                             TaintedType::Struct(elements) => elements,
-                            TaintedType::NamedStruct(name) => match self.get_or_create_named_struct_type(name.clone()) {
+                            TaintedType::NamedStruct(name) => match self.get_named_struct_type(name.clone()) {
                                 TaintedType::Struct(elements) => elements,
-                                ty => panic!("expected get_or_create_named_struct_type to return TaintedType::Struct; got {:?}", ty),
+                                ty => panic!("expected get_named_struct_type to return TaintedType::Struct; got {:?}", ty),
                             },
                             _ => panic!("Only expected Struct or NamedStruct case here"),
                         };
@@ -1224,6 +1205,61 @@ impl<'m> ModuleTaintState<'m> {
                 }
             },
         }
+    }
+}
+
+pub struct ModuleTaintResult<'m> {
+    /// Map from function name to the `FunctionTaintState` for that function
+    fn_taint_states: HashMap<String, FunctionTaintState<'m>>,
+
+    /// Map from the name of a named struct, to the type for that struct's
+    /// contents.
+    named_struct_types: HashMap<String, TaintedType>,
+}
+
+impl<'m> ModuleTaintResult<'m> {
+    /// Given a function name, returns a map from variable name to `TaintedType`
+    /// for all the variables in that function.
+    pub fn get_function_taint_map(&self, fn_name: &str) -> &HashMap<Name, TaintedType> {
+        self.fn_taint_states
+            .get(fn_name)
+            .unwrap_or_else(|| {
+                panic!(
+                    "get_function_taint_map: no taint map found for function {:?}",
+                    fn_name
+                )
+            })
+            .get_taint_map()
+    }
+
+    /// Get the `TaintedType` for the given struct name.
+    pub fn get_named_struct_type(&self, struct_name: &str) -> &TaintedType {
+        self.named_struct_types.get(struct_name).unwrap_or_else(|| panic!("get_named_struct_type: unknown named struct: name {:?}", struct_name))
+    }
+
+    /// Is this type one of the tainted types
+    pub fn is_type_tainted(&self, ty: &TaintedType) -> bool {
+        match ty {
+            TaintedType::UntaintedValue => false,
+            TaintedType::TaintedValue => true,
+            TaintedType::UntaintedPointer(_) => false,
+            TaintedType::TaintedPointer(_) => true,
+            TaintedType::Struct(elements) => {
+                // a struct is tainted if any of its elements are
+                elements.iter().any(|e| self.is_type_tainted(&e.borrow()))
+            },
+            TaintedType::NamedStruct(name) => {
+                let inner_ty = self.get_named_struct_type(name);
+                self.is_type_tainted(inner_ty)
+            },
+            TaintedType::UntaintedFnPtr => false,
+            TaintedType::TaintedFnPtr => true,
+        }
+    }
+
+    /// Get the `TaintedType` of a variable by name
+    pub fn get_var_type(&self, funcname: &str, varname: &Name) -> &TaintedType {
+        &self.fn_taint_states[funcname].map[varname]
     }
 }
 

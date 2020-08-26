@@ -15,13 +15,13 @@ fn while_loop() {
 
     // Mark %8 tainted, manually. This should mean that although %7 was marked
     // untainted on the first pass, at fixpoint it should be marked tainted.
-    let mts = do_taint_analysis(
+    let mtr = do_taint_analysis(
         &module,
         funcname,
         vec![TaintedType::UntaintedValue],
         std::iter::once((Name::from(8), TaintedType::TaintedValue)).collect(),
     );
-    let taintmap = mts.get_function_taint_map(funcname);
+    let taintmap = mtr.get_function_taint_map(funcname);
     assert_eq!(
         taintmap.get(&Name::from(7)),
         Some(&TaintedType::TaintedValue)
@@ -35,13 +35,13 @@ fn for_loop() {
 
     // Mark %12 tainted, manually. This should mean that %8 (the return value)
     // ends up tainted at fixpoint.
-    let mts = do_taint_analysis(
+    let mtr = do_taint_analysis(
         &module,
         funcname,
         vec![TaintedType::UntaintedValue],
         std::iter::once((Name::from(12), TaintedType::TaintedValue)).collect(),
     );
-    let taintmap = mts.get_function_taint_map(funcname);
+    let taintmap = mtr.get_function_taint_map(funcname);
     assert_eq!(
         taintmap.get(&Name::from(8)),
         Some(&TaintedType::TaintedValue)
@@ -56,13 +56,13 @@ fn loop_over_array() {
     // Tainting %12 should be sufficient to taint %8 on a subsequent pass, and
     // %11 should be marked as pointer-to-tainted.
     // Then, the final return value %6 should also be marked tainted.
-    let mts = do_taint_analysis(
+    let mtr = do_taint_analysis(
         &module,
         funcname,
         vec![TaintedType::UntaintedValue],
         std::iter::once((Name::from(12), TaintedType::TaintedValue)).collect(),
     );
-    let taintmap = mts.get_function_taint_map(funcname);
+    let taintmap = mtr.get_function_taint_map(funcname);
     assert_eq!(
         taintmap.get(&Name::from(8)),
         Some(&TaintedType::TaintedValue)

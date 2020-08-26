@@ -14,14 +14,14 @@ fn simple_call() {
     let module = get_module();
 
     // test basic taint tracking through a called function
-    let mts = do_taint_analysis(
+    let mtr = do_taint_analysis(
         &module,
         "simple_caller",
         vec![TaintedType::TaintedValue],
         HashMap::new(),
     );
-    let caller_taintmap = mts.get_function_taint_map("simple_caller");
-    let callee_taintmap = mts.get_function_taint_map("simple_callee");
+    let caller_taintmap = mtr.get_function_taint_map("simple_caller");
+    let callee_taintmap = mtr.get_function_taint_map("simple_callee");
     assert_eq!(
         callee_taintmap.get(&Name::from(0)),
         Some(&TaintedType::TaintedValue)
@@ -45,14 +45,14 @@ fn nested_call() {
     let module = get_module();
 
     // test basic taint tracking through two calls
-    let mts = do_taint_analysis(
+    let mtr = do_taint_analysis(
         &module,
         "nested_caller",
         vec![TaintedType::TaintedValue, TaintedType::UntaintedValue],
         HashMap::new(),
     );
-    let nested_caller_taintmap = mts.get_function_taint_map("nested_caller");
-    let callee_taintmap = mts.get_function_taint_map("simple_callee");
+    let nested_caller_taintmap = mtr.get_function_taint_map("nested_caller");
+    let callee_taintmap = mtr.get_function_taint_map("simple_callee");
     assert_eq!(
         callee_taintmap.get(&Name::from(0)),
         Some(&TaintedType::TaintedValue)
@@ -78,14 +78,14 @@ fn call_in_loop() {
     // untainted function input, but manually mark %13 as tainted.
     // on the first pass, the call appears to have untainted arguments.
     // but on the second pass, it becomes clear that the call has tainted arguments.
-    let mts = do_taint_analysis(
+    let mtr = do_taint_analysis(
         &module,
         "caller_with_loop",
         vec![TaintedType::UntaintedValue],
         std::iter::once((Name::from(13), TaintedType::TaintedValue)).collect(),
     );
-    let caller_taintmap = mts.get_function_taint_map("caller_with_loop");
-    let callee_taintmap = mts.get_function_taint_map("simple_callee");
+    let caller_taintmap = mtr.get_function_taint_map("caller_with_loop");
+    let callee_taintmap = mtr.get_function_taint_map("simple_callee");
     assert_eq!(
         callee_taintmap.get(&Name::from(0)),
         Some(&TaintedType::TaintedValue)
@@ -115,13 +115,13 @@ fn recursive_call() {
 
     // untainted function input, but we mark %2 tainted, so the function input
     // should be marked tainted at fixpoint
-    let mts = do_taint_analysis(
+    let mtr = do_taint_analysis(
         &module,
         funcname,
         vec![TaintedType::UntaintedValue],
         std::iter::once((Name::from(2), TaintedType::TaintedValue)).collect(),
     );
-    let taintmap = mts.get_function_taint_map(funcname);
+    let taintmap = mtr.get_function_taint_map(funcname);
     assert_eq!(
         taintmap.get(&Name::from(0)),
         Some(&TaintedType::TaintedValue)
@@ -135,13 +135,13 @@ fn mutually_recursive_call() {
 
     // untainted function input, but we mark %4 tainted, so after recursion,
     // the function input should eventually be marked tainted
-    let mts = do_taint_analysis(
+    let mtr = do_taint_analysis(
         &module,
         funcname,
         vec![TaintedType::UntaintedValue],
         std::iter::once((Name::from(4), TaintedType::TaintedValue)).collect(),
     );
-    let taintmap = mts.get_function_taint_map(funcname);
+    let taintmap = mtr.get_function_taint_map(funcname);
     assert_eq!(
         taintmap.get(&Name::from(0)),
         Some(&TaintedType::TaintedValue)
