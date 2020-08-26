@@ -1237,6 +1237,11 @@ impl<'m> ModuleTaintResult<'m> {
         self.named_struct_types.get(struct_name).unwrap_or_else(|| panic!("get_named_struct_type: unknown named struct: name {:?}", struct_name))
     }
 
+    /// Iterate over all function names for which we have a taint map
+    pub fn get_function_names(&self) -> impl Iterator<Item = &String> {
+        self.fn_taint_states.keys()
+    }
+
     /// Is this type one of the tainted types
     pub fn is_type_tainted(&self, ty: &TaintedType) -> bool {
         match ty {
