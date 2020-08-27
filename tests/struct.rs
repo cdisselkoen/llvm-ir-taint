@@ -20,11 +20,13 @@ fn get_O3_module() -> Module {
 fn one_struct_element() {
     let funcname = "one_int";
     let module = get_module();
+    let config = Config::default();
 
     // Tainting the input should cause the output to be tainted, after being
     // written into the struct field and then read back out
     let mtr = do_taint_analysis(
         &module,
+        &config,
         funcname,
         vec![TaintedType::TaintedValue],
         std::iter::once((Name::from(8), TaintedType::TaintedValue)).collect(),
@@ -40,6 +42,7 @@ fn one_struct_element() {
 fn two_struct_elements() {
     let funcname = "two_ints_second";
     let module = get_module();
+    let config = Config::default();
 
     // Tainting the input should cause the output to be tainted, just as in the
     // above test.
@@ -47,6 +50,7 @@ fn two_struct_elements() {
     // tainted, only the second
     let mtr = do_taint_analysis(
         &module,
+        &config,
         funcname,
         vec![TaintedType::TaintedValue],
         HashMap::new(),
@@ -73,11 +77,13 @@ fn two_struct_elements() {
 fn zero_initialize() {
     let funcname = "zero_initialize";
     let module = get_module();
+    let config = Config::default();
 
     // With tainted input, we should have tainted output, but none of the struct
     // fields should be tainted, and neither should %21
     let mtr = do_taint_analysis(
         &module,
+        &config,
         funcname,
         vec![TaintedType::TaintedValue],
         HashMap::new(),
@@ -108,10 +114,12 @@ fn zero_initialize() {
 #[test]
 fn nested_struct() {
     let module = get_module();
+    let config = Config::default();
 
     // For nested_first, we just check that tainted input results in tainted output
     let mtr = do_taint_analysis(
         &module,
+        &config,
         "nested_first",
         vec![TaintedType::TaintedValue],
         HashMap::new(),
@@ -127,6 +135,7 @@ fn nested_struct() {
     // final output is tainted.
     let mtr = do_taint_analysis(
         &module,
+        &config,
         "nested_all",
         vec![TaintedType::UntaintedValue, TaintedType::TaintedValue],
         HashMap::new(),
@@ -150,10 +159,12 @@ fn nested_struct() {
 fn with_array() {
     let funcname = "with_array";
     let module = get_module();
+    let config = Config::default();
 
     // We check the inferred TaintedType for the struct, %3, given tainted input
     let mtr = do_taint_analysis(
         &module,
+        &config,
         funcname,
         vec![TaintedType::TaintedValue],
         HashMap::new(),
@@ -184,11 +195,13 @@ fn with_array() {
 #[test]
 fn structptr() {
     let module = get_module();
+    let config = Config::default();
 
     // For these two functions, we just check that tainted input causes tainted output
 
     let mtr = do_taint_analysis(
         &module,
+        &config,
         "structptr",
         vec![TaintedType::TaintedValue],
         HashMap::new(),
@@ -201,6 +214,7 @@ fn structptr() {
 
     let mtr = do_taint_analysis(
         &module,
+        &config,
         "structelptr",
         vec![TaintedType::TaintedValue],
         HashMap::new(),
@@ -216,12 +230,14 @@ fn structptr() {
 fn changeptr() {
     let funcname = "changeptr";
     let module = get_module();
+    let config = Config::default();
 
     // For this function, given tainted input, we check that the final inferred
     // TaintedType for ti is a pointer to a ThreeInts with the second element
     // tainted
     let mtr = do_taint_analysis(
         &module,
+        &config,
         funcname,
         vec![TaintedType::TaintedValue],
         HashMap::new(),
@@ -245,6 +261,8 @@ fn changeptr() {
 fn with_ptr() {
     let funcname = "with_ptr";
     let module = get_O3_module();
+    let mut config = Config::default();
+    config.ext_functions.insert("malloc".into(), ExternalFunctionHandling::IgnoreAndReturnUntainted);
 
     // For this function, given tainted input, check that the final inferred
     // TaintedType for struct TwoInts is (untainted, tainted)
@@ -252,6 +270,7 @@ fn with_ptr() {
     // appropriate structure
     let mtr = do_taint_analysis(
         &module,
+        &config,
         funcname,
         vec![TaintedType::TaintedValue],
         HashMap::new(),

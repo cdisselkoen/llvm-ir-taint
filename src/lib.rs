@@ -9,6 +9,38 @@ use std::convert::TryInto;
 use std::fmt::Debug;
 use std::rc::Rc;
 
+#[non_exhaustive]
+pub struct Config {
+    /// How to handle external functions -- that is, functions not defined in the
+    /// `Module`.
+    /// If we encounter an external function with a name not found in this map,
+    /// we will panic.
+    pub ext_functions: HashMap<String, ExternalFunctionHandling>,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            ext_functions: HashMap::new(),
+        }
+    }
+}
+
+pub enum ExternalFunctionHandling {
+    /// Ignore the call to the external function, and assume it returns fully
+    /// untainted data.
+    IgnoreAndReturnUntainted,
+    /// Ignore the call to the external function, and assume it returns tainted
+    /// data.
+    IgnoreAndReturnTainted,
+    /// Assume that the external function returns tainted data if and only if any
+    /// of its parameters are tainted or point to tainted data (potentially
+    /// recursively).
+    PropagateTaint,
+    /// Panic if we encounter a call to this external function.
+    Panic,
+}
+
 /// The main function in this module. Given an LLVM module and the name of a
 /// function to analyze, returns a `ModuleTaintResult` with data on that function
 /// and all functions it calls, directly or transitively.
@@ -22,6 +54,7 @@ use std::rc::Rc;
 /// `TaintedType`s.
 pub fn do_taint_analysis<'m>(
     module: &'m Module,
+    config: &'m Config,
     start_fn_name: &str,
     args: Vec<TaintedType>,
     nonargs: HashMap<Name, TaintedType>,
@@ -42,7 +75,7 @@ pub fn do_taint_analysis<'m>(
     {
         initial_taintmap.insert(name, ty);
     }
-    ModuleTaintState::do_analysis(module, &f.name, initial_taintmap)
+    ModuleTaintState::do_analysis(module, config, &f.name, initial_taintmap)
         .into_module_taint_result()
 }
 
@@ -362,6 +395,9 @@ struct ModuleTaintState<'m> {
     /// llvm-ir `Module`
     module: &'m Module,
 
+    /// The configuration for the analysis
+    config: &'m Config,
+
     /// Map from function name to the `FunctionTaintState` for that function
     fn_taint_states: HashMap<String, FunctionTaintState<'m>>,
 
@@ -463,6 +499,24 @@ impl FunctionSummary {
             },
         }
     }
+
+    /// Taint the return type.
+    ///
+    /// Returns `true` if a change was made to the `FunctionSummary`.
+    fn taint_ret(&mut self) -> bool {
+        match &mut self.ret {
+            None => false,
+            Some(ret) => {
+                let tainted = ret.to_tainted();
+                if ret == &tainted {
+                    false
+                } else {
+                    *ret = tainted;
+                    true
+                }
+            }
+        }
+    }
 }
 
 impl<'m> ModuleTaintState<'m> {
@@ -477,21 +531,24 @@ impl<'m> ModuleTaintState<'m> {
     /// the function.
     fn do_analysis(
         module: &'m Module,
+        config: &'m Config,
         start_fn: &'m str,
         start_fn_taint_map: HashMap<Name, TaintedType>,
     ) -> Self {
-        let mut mts = Self::new(module, start_fn, start_fn_taint_map);
+        let mut mts = Self::new(module, config, start_fn, start_fn_taint_map);
         mts.compute();
         mts
     }
 
     fn new(
         module: &'m Module,
+        config: &'m Config,
         start_fn: &'m str,
         start_fn_taint_map: HashMap<Name, TaintedType>,
     ) -> Self {
         Self {
             module,
+            config,
             fn_taint_states: std::iter::once((
                 start_fn.into(),
                 FunctionTaintState::from_taint_map(start_fn_taint_map, module),
@@ -530,15 +587,41 @@ impl<'m> ModuleTaintState<'m> {
         // tainted, and then nothing can change so the algorithm must terminate.
         while !self.fn_worklist.is_empty() {
             let fn_name = self.pop_from_worklist();
-            let func = self.module.get_func_by_name(fn_name).unwrap_or_else(|| {
-                panic!(
-                    "Function name {:?} found in worklist but not found in module",
-                    fn_name
-                )
-            });
-            let changed = self
-                .process_function(func)
-                .unwrap_or_else(|e| panic!("In function {:?}: {}", fn_name, e));
+            let changed = match self.module.get_func_by_name(fn_name) {
+                Some(func) => {
+                    // internal function (defined in the current module):
+                    // process it normally
+                    self
+                        .process_function(func)
+                        .unwrap_or_else(|e| panic!("In function {:?}: {}", fn_name, e))
+                },
+                None => {
+                    // external function (not defined in the current module):
+                    // see how we're configured to handle this function
+                    match self.config.ext_functions.get(fn_name) {
+                        Some(ExternalFunctionHandling::IgnoreAndReturnUntainted) => {
+                            // no need to do anything
+                            false
+                        },
+                        Some(ExternalFunctionHandling::IgnoreAndReturnTainted) => {
+                            // mark the return value tainted, if it wasn't already
+                            // we require that anyone who places an external
+                            // function on the worklist is responsible for
+                            // making sure it has at least a default summary in
+                            // place, so we can assume here that there is a
+                            // summary
+                            let summary = self.fn_summaries.get_mut(fn_name).unwrap_or_else(|| panic!("Internal invariant violated: External function {:?} on the worklist has no summary", fn_name));
+                            summary.taint_ret()
+                        },
+                        Some(ExternalFunctionHandling::PropagateTaint) => {
+                            unimplemented!("ExternalFunctionHandling::PropagateTaint")
+                        },
+                        None | Some(ExternalFunctionHandling::Panic) => {
+                            panic!("Call of a function named {:?} not found in the module", fn_name)
+                        },
+                    }
+                },
+            };
             if changed {
                 self.fn_worklist.insert(fn_name);
             }
@@ -682,7 +765,7 @@ impl<'m> ModuleTaintState<'m> {
     /// `FunctionTaintState` if appropriate.
     ///
     /// Returns `true` if a change was made to the `FunctionTaintState`, or `false` if not.
-    fn process_instruction(&mut self, inst: &Instruction) -> Result<bool, String> {
+    fn process_instruction(&mut self, inst: &'m Instruction) -> Result<bool, String> {
         if inst.is_binary_op() {
             let cur_fn = self.get_cur_fn();
             let bop: groups::BinaryOp = inst.clone().try_into().unwrap();
@@ -954,13 +1037,7 @@ impl<'m> ModuleTaintState<'m> {
                                     };
                                     cur_fn.update_pointee_taintedtype(&pointee_ty, value_ty)
                                 } else {
-                                    match self.module.get_func_by_name(name) {
-                                        Some(func) => self.process_function_call(call, func),
-                                        None => panic!(
-                                            "Call of a function named {:?} not found in the module",
-                                            name
-                                        ),
-                                    }
+                                    self.process_function_call(call, name)
                                 }
                             },
                             Constant::GlobalReference{ name, .. } => {
@@ -977,32 +1054,33 @@ impl<'m> ModuleTaintState<'m> {
         }
     }
 
-    /// Process a call of the given `Function`.
+    /// Process the a call of a function with the given name.
     fn process_function_call(
         &mut self,
         call: &instruction::Call,
-        func: &'m Function,
+        funcname: &'m String,
     ) -> Result<bool, String> {
         let module = self.module;
         // mark this function as a caller of the called function.
         // This ensures that if the summary of the called function is ever updated,
         // the current function will be put back on the worklist.
-        let callers = self.callers.entry(func.name.clone()).or_default();
+        let callers = self.callers.entry(funcname.clone()).or_default();
         callers.insert(&self.cur_fn);
-        // use the `TaintedType`s of the provided arguments to update the
-        // `TaintedType`s of the parameters in the function summary, if appropriate
-        let summary = match self.fn_summaries.entry(func.name.clone()) {
+        // Get the function summary for the called function
+        let summary = match self.fn_summaries.entry(funcname.clone()) {
             Entry::Occupied(oentry) => oentry.into_mut(),
             Entry::Vacant(ventry) => {
                 // no summary: start with the default one (nothing tainted) and add the
                 // called function to the worklist so that we can compute a better one
-                self.fn_worklist.insert(&func.name);
+                self.fn_worklist.insert(funcname);
                 ventry.insert(FunctionSummary::new_untainted(
                     call.arguments.iter().map(|(arg, _)| module.type_of(arg)),
                     &module.type_of(call),
                 ))
             },
         };
+        // use the `TaintedType`s of the provided arguments to update the
+        // `TaintedType`s of the parameters in the function summary, if appropriate
         let cur_fn = {
             // have to inline self.get_cur_fn() here to convince the borrow checker
             // that we only need to borrow self.fn_taint_states and not all of self,
@@ -1019,11 +1097,11 @@ impl<'m> ModuleTaintState<'m> {
             .collect();
         if summary.update_params(arg_types)? {
             // summary changed: put all callers of the called function on the worklist
-            for caller in self.callers.get(&func.name).unwrap().iter() {
+            for caller in self.callers.get(funcname).unwrap().iter() {
                 self.fn_worklist.insert(caller);
             }
             // and also put the called function itself on the worklist
-            self.fn_worklist.insert(&func.name);
+            self.fn_worklist.insert(funcname);
         }
         // and finally, for non-void calls, use the return type in the summary to
         // update the type of the result in this function

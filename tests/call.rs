@@ -12,10 +12,12 @@ fn get_module() -> Module {
 #[test]
 fn simple_call() {
     let module = get_module();
+    let config = Config::default();
 
     // test basic taint tracking through a called function
     let mtr = do_taint_analysis(
         &module,
+        &config,
         "simple_caller",
         vec![TaintedType::TaintedValue],
         HashMap::new(),
@@ -43,10 +45,12 @@ fn simple_call() {
 #[test]
 fn nested_call() {
     let module = get_module();
+    let config = Config::default();
 
     // test basic taint tracking through two calls
     let mtr = do_taint_analysis(
         &module,
+        &config,
         "nested_caller",
         vec![TaintedType::TaintedValue, TaintedType::UntaintedValue],
         HashMap::new(),
@@ -74,12 +78,14 @@ fn nested_call() {
 #[test]
 fn call_in_loop() {
     let module = get_module();
+    let config = Config::default();
 
     // untainted function input, but manually mark %13 as tainted.
     // on the first pass, the call appears to have untainted arguments.
     // but on the second pass, it becomes clear that the call has tainted arguments.
     let mtr = do_taint_analysis(
         &module,
+        &config,
         "caller_with_loop",
         vec![TaintedType::UntaintedValue],
         std::iter::once((Name::from(13), TaintedType::TaintedValue)).collect(),
@@ -111,12 +117,14 @@ fn call_in_loop() {
 #[test]
 fn recursive_call() {
     let module = get_module();
+    let config = Config::default();
     let funcname = "recursive_simple";
 
     // untainted function input, but we mark %2 tainted, so the function input
     // should be marked tainted at fixpoint
     let mtr = do_taint_analysis(
         &module,
+        &config,
         funcname,
         vec![TaintedType::UntaintedValue],
         std::iter::once((Name::from(2), TaintedType::TaintedValue)).collect(),
@@ -131,12 +139,14 @@ fn recursive_call() {
 #[test]
 fn mutually_recursive_call() {
     let module = get_module();
+    let config = Config::default();
     let funcname = "mutually_recursive_a";
 
     // untainted function input, but we mark %4 tainted, so after recursion,
     // the function input should eventually be marked tainted
     let mtr = do_taint_analysis(
         &module,
+        &config,
         funcname,
         vec![TaintedType::UntaintedValue],
         std::iter::once((Name::from(4), TaintedType::TaintedValue)).collect(),

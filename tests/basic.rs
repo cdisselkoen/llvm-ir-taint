@@ -19,10 +19,12 @@ fn get_memory_module() -> Module {
 fn basic_operation() {
     let funcname = "two_args";
     let module = get_basic_module();
+    let config = Config::default();
 
     // with both arguments tainted
     let mtr = do_taint_analysis(
         &module,
+        &config,
         funcname,
         vec![TaintedType::TaintedValue, TaintedType::TaintedValue],
         HashMap::new(),
@@ -48,6 +50,7 @@ fn basic_operation() {
     // with neither argument tainted
     let mtr = do_taint_analysis(
         &module,
+        &config,
         funcname,
         vec![TaintedType::UntaintedValue, TaintedType::UntaintedValue],
         HashMap::new(),
@@ -73,6 +76,7 @@ fn basic_operation() {
     // with just the first argument tainted
     let mtr = do_taint_analysis(
         &module,
+        &config,
         funcname,
         vec![TaintedType::TaintedValue, TaintedType::UntaintedValue],
         HashMap::new(),
@@ -98,6 +102,7 @@ fn basic_operation() {
     // with just the second argument tainted
     let mtr = do_taint_analysis(
         &module,
+        &config,
         funcname,
         vec![TaintedType::UntaintedValue, TaintedType::TaintedValue],
         HashMap::new(),
@@ -125,10 +130,12 @@ fn basic_operation() {
 fn binops() {
     let funcname = "binops";
     let module = get_basic_module();
+    let config = Config::default();
 
     // with both arguments tainted
     let mtr = do_taint_analysis(
         &module,
+        &config,
         funcname,
         vec![TaintedType::TaintedValue, TaintedType::TaintedValue],
         HashMap::new(),
@@ -190,6 +197,7 @@ fn binops() {
     // with neither argument tainted
     let mtr = do_taint_analysis(
         &module,
+        &config,
         funcname,
         vec![TaintedType::UntaintedValue, TaintedType::UntaintedValue],
         HashMap::new(),
@@ -251,6 +259,7 @@ fn binops() {
     // with just the second argument tainted
     let mtr = do_taint_analysis(
         &module,
+        &config,
         funcname,
         vec![TaintedType::UntaintedValue, TaintedType::TaintedValue],
         HashMap::new(),
@@ -312,6 +321,7 @@ fn binops() {
     // with %8 manually tainted, and nothing else
     let mtr = do_taint_analysis(
         &module,
+        &config,
         funcname,
         vec![TaintedType::UntaintedValue, TaintedType::UntaintedValue],
         std::iter::once((Name::from(8), TaintedType::TaintedValue)).collect(),
@@ -375,10 +385,12 @@ fn binops() {
 fn phi() {
     let funcname = "conditional_nozero";
     let module = get_basic_module();
+    let config = Config::default();
 
     // with both arguments untainted
     let mtr = do_taint_analysis(
         &module,
+        &config,
         funcname,
         vec![TaintedType::UntaintedValue, TaintedType::UntaintedValue],
         HashMap::new(),
@@ -408,6 +420,7 @@ fn phi() {
     // with second argument tainted
     let mtr = do_taint_analysis(
         &module,
+        &config,
         funcname,
         vec![TaintedType::UntaintedValue, TaintedType::TaintedValue],
         HashMap::new(),
@@ -439,10 +452,12 @@ fn phi() {
 fn load_and_store() {
     let funcname = "load_and_store";
     let module = get_memory_module();
+    let config = Config::default();
 
     // with both arguments untainted
     let mtr = do_taint_analysis(
         &module,
+        &config,
         funcname,
         vec![
             TaintedType::untainted_ptr_to(TaintedType::UntaintedValue),
@@ -471,6 +486,7 @@ fn load_and_store() {
     // with value tainted: make sure that we correctly load a tainted value
     let mtr = do_taint_analysis(
         &module,
+        &config,
         funcname,
         vec![
             TaintedType::untainted_ptr_to(TaintedType::UntaintedValue),
@@ -501,10 +517,12 @@ fn load_and_store() {
 fn alloca() {
     let funcname = "local_ptr";
     let module = get_memory_module();
+    let config = Config::default();
 
     // with the argument untainted
     let mtr = do_taint_analysis(
         &module,
+        &config,
         funcname,
         vec![TaintedType::UntaintedValue],
         HashMap::new(),
@@ -518,6 +536,7 @@ fn alloca() {
     // with the argument tainted
     let mtr = do_taint_analysis(
         &module,
+        &config,
         funcname,
         vec![TaintedType::TaintedValue],
         HashMap::new(),
@@ -537,10 +556,12 @@ fn alloca() {
 fn overwrite() {
     let funcname = "overwrite";
     let module = get_memory_module();
+    let config = Config::default();
 
     // with both arguments untainted
     let mtr = do_taint_analysis(
         &module,
+        &config,
         funcname,
         vec![
             TaintedType::untainted_ptr_to(TaintedType::UntaintedValue),
@@ -557,6 +578,7 @@ fn overwrite() {
     // with the second argument tainted
     let mtr = do_taint_analysis(
         &module,
+        &config,
         funcname,
         vec![
             TaintedType::untainted_ptr_to(TaintedType::UntaintedValue),
@@ -575,10 +597,12 @@ fn overwrite() {
 fn load_and_store_mult() {
     let funcname = "load_and_store_mult";
     let module = get_memory_module();
+    let config = Config::default();
 
     // with both arguments untainted
     let mtr = do_taint_analysis(
         &module,
+        &config,
         funcname,
         vec![
             TaintedType::untainted_ptr_to(TaintedType::UntaintedValue),
@@ -595,6 +619,7 @@ fn load_and_store_mult() {
     // with the second argument tainted
     let mtr = do_taint_analysis(
         &module,
+        &config,
         funcname,
         vec![
             TaintedType::untainted_ptr_to(TaintedType::UntaintedValue),
@@ -613,10 +638,12 @@ fn load_and_store_mult() {
 fn array() {
     let funcname = "load_and_store_mult";
     let module = get_memory_module();
+    let config = Config::default();
 
     // with both arguments untainted
     let mtr = do_taint_analysis(
         &module,
+        &config,
         funcname,
         vec![
             TaintedType::untainted_ptr_to(TaintedType::UntaintedValue),
@@ -633,6 +660,7 @@ fn array() {
     // with the second argument tainted
     let mtr = do_taint_analysis(
         &module,
+        &config,
         funcname,
         vec![
             TaintedType::untainted_ptr_to(TaintedType::UntaintedValue),
@@ -651,6 +679,7 @@ fn array() {
     // remain untainted.
     let mtr = do_taint_analysis(
         &module,
+        &config,
         funcname,
         vec![
             TaintedType::untainted_ptr_to(TaintedType::UntaintedValue),
