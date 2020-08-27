@@ -1,4 +1,5 @@
 use either::Either;
+use llvm_ir::constant::ConstBinaryOp;
 use llvm_ir::instruction::{groups, BinaryOp, HasResult, UnaryOp};
 use llvm_ir::types::NamedStructDef;
 use llvm_ir::*;
@@ -162,27 +163,100 @@ impl TaintedType {
     /// If the `Constant` is a `GlobalReference`, we'll create a fresh
     /// `TaintedType` for the global being referenced; we'll assume the global
     /// hasn't been created yet.
-    pub fn from_constant(constant: &Constant, module: &Module) -> Self {
+    pub fn from_constant(constant: &Constant, module: &Module) -> Result<Self, String> {
         match constant {
-            Constant::Int { .. } => TaintedType::UntaintedValue,
-            Constant::Float(_) => TaintedType::UntaintedValue,
-            Constant::Null(ty) => TaintedType::from_llvm_type(ty),
-            Constant::AggregateZero(ty) => TaintedType::from_llvm_type(ty),
+            Constant::Int { .. } => Ok(TaintedType::UntaintedValue),
+            Constant::Float(_) => Ok(TaintedType::UntaintedValue),
+            Constant::Null(ty) => Ok(TaintedType::from_llvm_type(ty)),
+            Constant::AggregateZero(ty) => Ok(TaintedType::from_llvm_type(ty)),
             Constant::Struct { values, .. } => {
-                TaintedType::struct_of(values.iter().map(|v| Self::from_constant(v, module)))
+                let elements = values.iter().map(|v| Self::from_constant(v, module)).collect::<Result<Vec<_>, _>>()?;
+                Ok(TaintedType::struct_of(elements))
             },
-            Constant::Array { element_type, .. } => TaintedType::from_llvm_type(element_type),
+            Constant::Array { element_type, .. } => Ok(TaintedType::from_llvm_type(element_type)),
             Constant::Vector(vec) => {
                 // all elements should be the same type, so we do the type of the first one
-                TaintedType::from_llvm_type(
+                Ok(TaintedType::from_llvm_type(
                     &module.type_of(vec.get(0).expect("Constant::Vector should not be empty"))
-                )
+                ))
             },
-            Constant::Undef(ty) => TaintedType::from_llvm_type(ty),
+            Constant::Undef(ty) => Ok(TaintedType::from_llvm_type(ty)),
+            Constant::BlockAddress => Ok(TaintedType::UntaintedValue), // technically a pointer, but for our purposes an opaque constant
             Constant::GlobalReference { ty, .. } => {
-                TaintedType::untainted_ptr_to(TaintedType::from_llvm_type(ty))
+                Ok(TaintedType::untainted_ptr_to(TaintedType::from_llvm_type(ty)))
+            },
+            Constant::Add(a) => TaintedType::from_constant_binop(a, module),
+            Constant::Sub(s) => TaintedType::from_constant_binop(s, module),
+            Constant::Mul(m) => TaintedType::from_constant_binop(m, module),
+            Constant::UDiv(u) => TaintedType::from_constant_binop(u, module),
+            Constant::SDiv(s) => TaintedType::from_constant_binop(s, module),
+            Constant::URem(u) => TaintedType::from_constant_binop(u, module),
+            Constant::SRem(s) => TaintedType::from_constant_binop(s, module),
+            Constant::And(a) => TaintedType::from_constant_binop(a, module),
+            Constant::Or(o) => TaintedType::from_constant_binop(o, module),
+            Constant::Xor(x) => TaintedType::from_constant_binop(x, module),
+            Constant::LShr(l) => TaintedType::from_constant_binop(l, module),
+            Constant::AShr(a) => TaintedType::from_constant_binop(a, module),
+            Constant::Shl(s) => TaintedType::from_constant_binop(s, module),
+            Constant::FAdd(f) => TaintedType::from_constant_binop(f, module),
+            Constant::FSub(f) => TaintedType::from_constant_binop(f, module),
+            Constant::FMul(f) => TaintedType::from_constant_binop(f, module),
+            Constant::FDiv(f) => TaintedType::from_constant_binop(f, module),
+            Constant::FRem(f) => TaintedType::from_constant_binop(f, module),
+            Constant::Trunc(t) => TaintedType::from_constant(&t.operand, module),
+            Constant::BitCast(b) => TaintedType::from_constant(&b.operand, module),
+            Constant::AddrSpaceCast(a) => TaintedType::from_constant(&a.operand, module),
+            Constant::ZExt(z) => TaintedType::from_constant(&z.operand, module),
+            Constant::SExt(s) => TaintedType::from_constant(&s.operand, module),
+            Constant::UIToFP(u) => TaintedType::from_constant(&u.operand, module),
+            Constant::SIToFP(s) => TaintedType::from_constant(&s.operand, module),
+            Constant::FPExt(f) => TaintedType::from_constant(&f.operand, module),
+            Constant::FPTrunc(f) => TaintedType::from_constant(&f.operand, module),
+            Constant::FPToUI(f) => TaintedType::from_constant(&f.operand, module),
+            Constant::FPToSI(f) => TaintedType::from_constant(&f.operand, module),
+            Constant::IntToPtr(itp) => {
+                let int_type = TaintedType::from_constant(&itp.operand, module)?;
+                let ptr_type = TaintedType::from_llvm_type(&module.type_of(itp));
+                if int_type.is_tainted_nonstruct() {
+                    Ok(ptr_type.to_tainted())
+                } else {
+                    Ok(ptr_type)
+                }
+            },
+            Constant::PtrToInt(pti) => {
+                let ptr_type = TaintedType::from_constant(&pti.operand, module)?;
+                let int_type = TaintedType::from_llvm_type(&module.type_of(pti));
+                if ptr_type.is_tainted_nonstruct() {
+                    Ok(int_type.to_tainted())
+                } else {
+                    Ok(int_type)
+                }
             },
             _ => unimplemented!("TaintedType::from_constant on {:?}", constant),
+        }
+    }
+
+    /// For `ConstBinaryOp`s where the two operands and the result are all the same LLVM type
+    fn from_constant_binop(bop: &impl ConstBinaryOp, module: &Module) -> Result<TaintedType, String> {
+        TaintedType::from_constant(&bop.get_operand0(), module)?
+            .join(&TaintedType::from_constant(&bop.get_operand1(), module)?)
+    }
+
+    /// Is this type tainted?
+    ///
+    /// This function only works on non-struct types. For a more generic function
+    /// that works on all types, use `ModuleTaintState::is_type_tainted()`.
+    pub fn is_tainted_nonstruct(&self) -> bool {
+        match self {
+            TaintedType::UntaintedValue => false,
+            TaintedType::TaintedValue => true,
+            TaintedType::UntaintedPointer(_) => false,
+            TaintedType::TaintedPointer(_) => true,
+            TaintedType::UntaintedFnPtr => false,
+            TaintedType::TaintedFnPtr => true,
+            TaintedType::Struct(_) | TaintedType::NamedStruct(_) => {
+                panic!("is_tainted_nonstruct on a struct type")
+            },
         }
     }
 
@@ -282,12 +356,12 @@ impl<'m> FunctionTaintState<'m> {
     }
 
     /// Get the `TaintedType` of the given `Operand`, according to the current state.
-    fn get_type_of_operand(&self, op: &Operand) -> TaintedType {
+    fn get_type_of_operand(&self, op: &Operand) -> Result<TaintedType, String> {
         match op {
             Operand::ConstantOperand(constant) => TaintedType::from_constant(constant, &self.module),
-            Operand::MetadataOperand => TaintedType::UntaintedValue,
+            Operand::MetadataOperand => Ok(TaintedType::UntaintedValue),
             Operand::LocalOperand { name, .. } => match self.map.get(name) {
-                Some(ty) => ty.clone(),
+                Some(ty) => Ok(ty.clone()),
                 None => {
                     // We can end up with this case (operand doesn't exist in
                     // the type map yet) due to loops and other things, because
@@ -303,7 +377,7 @@ impl<'m> FunctionTaintState<'m> {
                     // be corrected on a future pass. (And we'll definitely have
                     // a future pass, because that variable becoming defined
                     // counts as a change for the fixpoint algorithm.)
-                    TaintedType::from_llvm_type(&self.module.type_of(op))
+                    Ok(TaintedType::from_llvm_type(&self.module.type_of(op)))
                 },
             },
         }
@@ -312,7 +386,7 @@ impl<'m> FunctionTaintState<'m> {
     /// Return `true` if the given `op` has been marked tainted, otherwise `false`.
     /// This function should only be called on scalars, not pointers, arrays, or structs.
     fn is_scalar_operand_tainted(&self, op: &Operand) -> Result<bool, String> {
-        match self.get_type_of_operand(op) {
+        match self.get_type_of_operand(op)? {
             TaintedType::UntaintedValue => Ok(false),
             TaintedType::TaintedValue => Ok(true),
             TaintedType::UntaintedFnPtr => Ok(false),
@@ -670,7 +744,7 @@ impl<'m> ModuleTaintState<'m> {
         })
     }
 
-    /// Is this type one of the tainted types
+    /// Is this type tainted (or, for structs, is any element of the struct tainted)
     pub fn is_type_tainted(&mut self, ty: &TaintedType) -> bool {
         match ty {
             TaintedType::UntaintedValue => false,
@@ -769,8 +843,8 @@ impl<'m> ModuleTaintState<'m> {
         if inst.is_binary_op() {
             let cur_fn = self.get_cur_fn();
             let bop: groups::BinaryOp = inst.clone().try_into().unwrap();
-            let op0_ty = cur_fn.get_type_of_operand(bop.get_operand0());
-            let op1_ty = cur_fn.get_type_of_operand(bop.get_operand1());
+            let op0_ty = cur_fn.get_type_of_operand(bop.get_operand0())?;
+            let op1_ty = cur_fn.get_type_of_operand(bop.get_operand1())?;
             let result_ty = op0_ty.join(&op1_ty)?;
             cur_fn.update_var_taintedtype(bop.get_result().clone(), result_ty)
         } else {
@@ -789,12 +863,12 @@ impl<'m> ModuleTaintState<'m> {
                 | Instruction::ZExt(_) => {
                     let cur_fn = self.get_cur_fn();
                     let uop: groups::UnaryOp = inst.clone().try_into().unwrap();
-                    let op_ty = cur_fn.get_type_of_operand(uop.get_operand());
+                    let op_ty = cur_fn.get_type_of_operand(uop.get_operand())?;
                     cur_fn.update_var_taintedtype(uop.get_result().clone(), op_ty)
                 },
                 Instruction::BitCast(bc) => {
                     let cur_fn = self.get_cur_fn();
-                    let from_ty = cur_fn.get_type_of_operand(&bc.operand);
+                    let from_ty = cur_fn.get_type_of_operand(&bc.operand)?;
                     let result_ty = match from_ty {
                         TaintedType::UntaintedValue | TaintedType::UntaintedFnPtr => {
                             TaintedType::from_llvm_type(&bc.to_type)
@@ -842,7 +916,7 @@ impl<'m> ModuleTaintState<'m> {
                     let result_ty = if cur_fn.is_scalar_operand_tainted(&ee.index)? {
                         TaintedType::TaintedValue
                     } else {
-                        cur_fn.get_type_of_operand(&ee.vector) // in our type system, the type of a vector and the type of one of its elements are the same
+                        cur_fn.get_type_of_operand(&ee.vector)? // in our type system, the type of a vector and the type of one of its elements are the same
                     };
                     cur_fn.update_var_taintedtype(ee.get_result().clone(), result_ty)
                 },
@@ -853,22 +927,22 @@ impl<'m> ModuleTaintState<'m> {
                     {
                         TaintedType::TaintedValue
                     } else {
-                        cur_fn.get_type_of_operand(&ie.vector) // in our type system, inserting an untainted element does't change the type of the vector
+                        cur_fn.get_type_of_operand(&ie.vector)? // in our type system, inserting an untainted element does't change the type of the vector
                     };
                     cur_fn.update_var_taintedtype(ie.get_result().clone(), result_ty)
                 },
                 Instruction::ShuffleVector(sv) => {
                     // Vector operands are still scalars in our type system
                     let cur_fn = self.get_cur_fn();
-                    let op0_ty = cur_fn.get_type_of_operand(&sv.operand0);
-                    let op1_ty = cur_fn.get_type_of_operand(&sv.operand1);
+                    let op0_ty = cur_fn.get_type_of_operand(&sv.operand0)?;
+                    let op1_ty = cur_fn.get_type_of_operand(&sv.operand1)?;
                     let result_ty = op0_ty.join(&op1_ty)?;
                     cur_fn.update_var_taintedtype(sv.get_result().clone(), result_ty)
                 },
                 Instruction::ExtractValue(ev) => {
                     let cur_fn = self.get_cur_fn();
                     let ptr_to_struct =
-                        TaintedType::untainted_ptr_to(cur_fn.get_type_of_operand(&ev.aggregate));
+                        TaintedType::untainted_ptr_to(cur_fn.get_type_of_operand(&ev.aggregate)?);
                     let element_ptr_ty = self.get_element_ptr(&ptr_to_struct, &ev.indices)?;
                     let element_ty = match element_ptr_ty {
                         TaintedType::UntaintedPointer(rc) => rc.borrow().clone(),
@@ -878,8 +952,8 @@ impl<'m> ModuleTaintState<'m> {
                 },
                 Instruction::InsertValue(iv) => {
                     let cur_fn = self.get_cur_fn();
-                    let mut aggregate = cur_fn.get_type_of_operand(&iv.aggregate);
-                    let element_to_insert = cur_fn.get_type_of_operand(&iv.element);
+                    let mut aggregate = cur_fn.get_type_of_operand(&iv.aggregate)?;
+                    let element_to_insert = cur_fn.get_type_of_operand(&iv.element)?;
                     insert_value_into_struct(
                         &mut aggregate,
                         iv.indices.iter().copied(),
@@ -900,7 +974,7 @@ impl<'m> ModuleTaintState<'m> {
                 },
                 Instruction::Load(load) => {
                     let cur_fn = self.get_cur_fn();
-                    let result_ty = match cur_fn.get_type_of_operand(&load.address) {
+                    let result_ty = match cur_fn.get_type_of_operand(&load.address)? {
                         TaintedType::UntaintedValue | TaintedType::TaintedValue => {
                             return Err(format!(
                                 "Load: address is not a pointer: {:?}",
@@ -925,7 +999,7 @@ impl<'m> ModuleTaintState<'m> {
                 },
                 Instruction::Store(store) => {
                     let cur_fn = self.get_cur_fn();
-                    match cur_fn.get_type_of_operand(&store.address) {
+                    match cur_fn.get_type_of_operand(&store.address)? {
                         TaintedType::UntaintedValue | TaintedType::TaintedValue => {
                             Err(format!(
                                 "Store: address is not a pointer: {:?}",
@@ -944,7 +1018,7 @@ impl<'m> ModuleTaintState<'m> {
                             // specifically, update the pointee in that address type:
                             // e.g., if we're storing a tainted value, we want
                             // to update the address type to "pointer to tainted"
-                            let new_value_type = cur_fn.get_type_of_operand(&store.value);
+                            let new_value_type = cur_fn.get_type_of_operand(&store.value)?;
                             cur_fn.update_pointee_taintedtype(&rc, new_value_type)
                         },
                     }
@@ -952,13 +1026,13 @@ impl<'m> ModuleTaintState<'m> {
                 Instruction::Fence(_) => Ok(false),
                 Instruction::GetElementPtr(gep) => {
                     let cur_fn = self.get_cur_fn();
-                    let ptr = cur_fn.get_type_of_operand(&gep.address);
+                    let ptr = cur_fn.get_type_of_operand(&gep.address)?;
                     let result_ty = self.get_element_ptr(&ptr, &gep.indices)?;
                     self.get_cur_fn().update_var_taintedtype(gep.get_result().clone(), result_ty)
                 },
                 Instruction::PtrToInt(pti) => {
                     let cur_fn = self.get_cur_fn();
-                    match cur_fn.get_type_of_operand(&pti.operand) {
+                    match cur_fn.get_type_of_operand(&pti.operand)? {
                         TaintedType::UntaintedPointer(_) | TaintedType::UntaintedFnPtr => {
                             cur_fn.update_var_taintedtype(pti.get_result().clone(), TaintedType::UntaintedValue)
                         },
@@ -978,15 +1052,15 @@ impl<'m> ModuleTaintState<'m> {
                 },
                 Instruction::ICmp(icmp) => {
                     let cur_fn = self.get_cur_fn();
-                    let op0_ty = cur_fn.get_type_of_operand(&icmp.operand0);
-                    let op1_ty = cur_fn.get_type_of_operand(&icmp.operand1);
+                    let op0_ty = cur_fn.get_type_of_operand(&icmp.operand0)?;
+                    let op1_ty = cur_fn.get_type_of_operand(&icmp.operand1)?;
                     let result_ty = op0_ty.join(&op1_ty)?;
                     cur_fn.update_var_taintedtype(icmp.get_result().clone(), result_ty)
                 },
                 Instruction::FCmp(fcmp) => {
                     let cur_fn = self.get_cur_fn();
-                    let op0_ty = cur_fn.get_type_of_operand(&fcmp.operand0);
-                    let op1_ty = cur_fn.get_type_of_operand(&fcmp.operand1);
+                    let op0_ty = cur_fn.get_type_of_operand(&fcmp.operand0)?;
+                    let op1_ty = cur_fn.get_type_of_operand(&fcmp.operand1)?;
                     let result_ty = op0_ty.join(&op1_ty)?;
                     cur_fn.update_var_taintedtype(fcmp.get_result().clone(), result_ty)
                 },
@@ -995,7 +1069,9 @@ impl<'m> ModuleTaintState<'m> {
                     let mut incoming_types = phi
                         .incoming_values
                         .iter()
-                        .map(|(op, _)| cur_fn.get_type_of_operand(op));
+                        .map(|(op, _)| cur_fn.get_type_of_operand(op))
+                        .collect::<Result<Vec<_>, _>>()?
+                        .into_iter();
                     let mut result_ty = incoming_types.next().expect("Phi with no incoming values");
                     for ty in incoming_types {
                         result_ty = result_ty.join(&ty)?;
@@ -1007,8 +1083,8 @@ impl<'m> ModuleTaintState<'m> {
                     let result_ty = if cur_fn.is_scalar_operand_tainted(&select.condition)? {
                         TaintedType::TaintedValue
                     } else {
-                        let true_ty = cur_fn.get_type_of_operand(&select.true_value);
-                        let false_ty = cur_fn.get_type_of_operand(&select.false_value);
+                        let true_ty = cur_fn.get_type_of_operand(&select.true_value)?;
+                        let false_ty = cur_fn.get_type_of_operand(&select.false_value)?;
                         true_ty.join(&false_ty)?
                     };
                     cur_fn.update_var_taintedtype(select.get_result().clone(), result_ty)
@@ -1029,8 +1105,8 @@ impl<'m> ModuleTaintState<'m> {
                                     let cur_fn = self.get_cur_fn();
                                     let address_operand = call.arguments.get(0).map(|(op, _)| op).ok_or_else(|| format!("Expected llvm.memset to have at least three arguments, but it has {}", call.arguments.len()))?;
                                     let value_operand = call.arguments.get(1).map(|(op, _)| op).ok_or_else(|| format!("Expected llvm.memset to have at least three arguments, but it has {}", call.arguments.len()))?;
-                                    let address_ty = cur_fn.get_type_of_operand(address_operand);
-                                    let value_ty = cur_fn.get_type_of_operand(value_operand);
+                                    let address_ty = cur_fn.get_type_of_operand(address_operand)?;
+                                    let value_ty = cur_fn.get_type_of_operand(value_operand)?;
                                     let pointee_ty = match address_ty {
                                         TaintedType::UntaintedPointer(rc) | TaintedType::TaintedPointer(rc) => rc,
                                         _ => return Err(format!("llvm.memset: expected first argument to be a pointer, but it was {:?}", address_ty)),
@@ -1094,7 +1170,7 @@ impl<'m> ModuleTaintState<'m> {
             .arguments
             .iter()
             .map(|(arg, _)| cur_fn.get_type_of_operand(arg))
-            .collect();
+            .collect::<Result<_, _>>()?;
         if summary.update_params(arg_types)? {
             // summary changed: put all callers of the called function on the worklist
             for caller in self.callers.get(funcname).unwrap().iter() {
@@ -1137,7 +1213,8 @@ impl<'m> ModuleTaintState<'m> {
                         let ty = ret
                             .return_operand
                             .as_ref()
-                            .map(|op| cur_fn.get_type_of_operand(op));
+                            .map(|op| cur_fn.get_type_of_operand(op))
+                            .transpose()?;
                         if summary.update_ret(&ty.as_ref())? {
                             // summary changed: put all our callers on the worklist
                             for caller in self
