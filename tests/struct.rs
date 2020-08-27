@@ -9,6 +9,13 @@ fn get_module() -> Module {
         .unwrap_or_else(|e| panic!("Failed to parse module {:?}: {}", modname, e))
 }
 
+#[allow(non_snake_case)]
+fn get_O3_module() -> Module {
+    let modname = "../haybale/tests/bcfiles/struct-O3.bc";
+    Module::from_bc_path(&Path::new(modname))
+        .unwrap_or_else(|e| panic!("Failed to parse module {:?}: {}", modname, e))
+}
+
 #[test]
 fn one_struct_element() {
     let funcname = "one_int";
@@ -230,6 +237,37 @@ fn changeptr() {
             TaintedType::UntaintedValue,
             TaintedType::TaintedValue,
             TaintedType::UntaintedValue,
+        ]),
+    );
+}
+
+#[test]
+fn with_ptr() {
+    let funcname = "with_ptr";
+    let module = get_O3_module();
+
+    // For this function, given tainted input, check that the final inferred
+    // TaintedType for struct TwoInts is (untainted, tainted)
+    // and that the final inferred TaintedType for struct WithPointer has the
+    // appropriate structure
+    let mtr = do_taint_analysis(
+        &module,
+        funcname,
+        vec![TaintedType::TaintedValue],
+        HashMap::new(),
+    );
+    assert_eq!(
+        mtr.get_named_struct_type("struct.TwoInts"),
+        &TaintedType::struct_of(vec![
+            TaintedType::UntaintedValue,
+            TaintedType::TaintedValue,
+        ]),
+    );
+    assert_eq!(
+        mtr.get_named_struct_type("struct.WithPointer"),
+        &TaintedType::struct_of(vec![
+            TaintedType::NamedStruct("struct.TwoInts".into()),
+            TaintedType::untainted_ptr_to(TaintedType::untainted_ptr_to(TaintedType::NamedStruct("struct.TwoInts".into()))),
         ]),
     );
 }
