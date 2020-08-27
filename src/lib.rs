@@ -1170,14 +1170,7 @@ impl<'m> ModuleTaintState<'m> {
         parent_ptr: &'a TaintedType,
         indices: impl IntoIterator<Item = &'b I>,
     ) -> Result<TaintedType, String> {
-        self._get_element_ptr(parent_ptr, indices.into_iter().peekable())
-    }
-
-    fn _get_element_ptr<'a, 'b, I: Index + 'b>(
-        &mut self,
-        parent_ptr: &'a TaintedType,
-        mut indices: std::iter::Peekable<impl Iterator<Item = &'b I>>,
-    ) -> Result<TaintedType, String> {
+        let mut indices = indices.into_iter();
         // we 'pop' an index from the list. This represents choosing an element of
         // the "array" pointed to by the pointer.
         let _index = match indices.next() {
@@ -1185,6 +1178,14 @@ impl<'m> ModuleTaintState<'m> {
             None => return Err("get_element_ptr: called with no indices".into()),
         };
         // now the rest of this is just for dealing with subsequent indices
+        self._get_element_ptr(parent_ptr, indices.peekable())
+    }
+
+    fn _get_element_ptr<'a, 'b, I: Index + 'b>(
+        &mut self,
+        parent_ptr: &'a TaintedType,
+        mut indices: std::iter::Peekable<impl Iterator<Item = &'b I>>,
+    ) -> Result<TaintedType, String> {
         match parent_ptr {
             TaintedType::UntaintedValue | TaintedType::TaintedValue => {
                 Err("get_element_ptr: address is not a pointer, or too many indices".into())
@@ -1229,7 +1230,7 @@ impl<'m> ModuleTaintState<'m> {
                         // taint status of the inner_ptr, ignoring the taint status
                         // of the parent_ptr. I believe this is correct for most use
                         // cases.
-                        match indices.peek() {
+                        match indices.next() {
                             None if self.is_type_tainted(inner_ptr) => {
                                 Ok(TaintedType::TaintedPointer(rc.clone()))
                             },
@@ -1267,15 +1268,16 @@ impl<'m> ModuleTaintState<'m> {
                                     )
                                 })?;
                                 let pointee = pointee.clone(); // release the borrow of `self` due to `elements`
+                                let pointer_to_element = {
+                                    if self.is_type_tainted(parent_ptr) {
+                                        TaintedType::TaintedPointer(pointee)
+                                    } else {
+                                        TaintedType::UntaintedPointer(pointee)
+                                    }
+                                };
                                 match indices.peek() {
-                                    None => {
-                                        if self.is_type_tainted(parent_ptr) {
-                                            Ok(TaintedType::TaintedPointer(pointee))
-                                        } else {
-                                            Ok(TaintedType::UntaintedPointer(pointee))
-                                        }
-                                    },
-                                    Some(_) => self._get_element_ptr(&pointee.borrow(), indices),
+                                    None => Ok(pointer_to_element),
+                                    Some(_) => self._get_element_ptr(&pointer_to_element, indices),
                                 }
                             },
                         }
