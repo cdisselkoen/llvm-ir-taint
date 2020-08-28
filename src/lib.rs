@@ -125,9 +125,16 @@ pub struct Pointee {
     /// If this is a pointer to an element of a _named_ struct, here is the name
     /// of that named struct.
     ///
-    /// We have this so that if a change is made to the pointer type, we know
+    /// We have this so that if a change is made to the Pointee type, we know
     /// that the users of this named struct need to be re-added to the worklist.
     named_struct: Option<String>,
+
+    /// If this is a pointer to all or part of the contents of a global, here is
+    /// the name of that global.
+    ///
+    /// We have this so that if a change is made to the Pointee type, we know
+    /// that the users of this global need to be re-added to the worklist.
+    global: Option<Name>,
 }
 
 impl Pointee {
@@ -138,6 +145,7 @@ impl Pointee {
         Self {
             ty: Rc::new(RefCell::new(pointee_ty)),
             named_struct: None,
+            global: None,
         }
     }
 
@@ -150,6 +158,20 @@ impl Pointee {
         Self {
             ty: Rc::new(RefCell::new(element_ty)),
             named_struct: Some(struct_name),
+            global: None,
+        }
+    }
+
+    /// Construct a new pointee representing the contents of the global with
+    /// the given name.
+    /// This will be assumed to be distinct from all previously created
+    /// `Pointee`s -- that is, no pointer aliasing.
+    #[allow(dead_code)]
+    fn new_global_contents(contents_ty: TaintedType, global_name: Name) -> Self {
+        Self {
+            ty: Rc::new(RefCell::new(contents_ty)),
+            named_struct: None,
+            global: Some(global_name),
         }
     }
 
@@ -176,6 +198,24 @@ impl Pointee {
         }
     }
 
+    /// Mark the pointee as being all or part of the given global.
+    ///
+    /// If the pointee is later updated with `update()` or `taint()`, we will
+    /// re-add all users of this global to the worklist.
+    fn set_global_name(&mut self, global_name: Name) -> Result<(), String> {
+        match &mut self.global {
+            g @ None => {
+                *g = Some(global_name);
+                Ok(())
+            },
+            Some(old_name) if &global_name == old_name => Ok(()), // no change
+            Some(old_name) => Err(format!(
+                "Setting pointee global name to {:?}, but it was already set to {:?}",
+                global_name, old_name
+            )),
+        }
+    }
+
     /// Update the `TaintedType` representing the pointed-to contents with the
     /// given `TaintedType`.
     /// This perfoms a `join` of the given `TaintedType` and the previous
@@ -183,6 +223,11 @@ impl Pointee {
     ///
     /// Returns `true` if the contents' `TaintedType` changed, accounting for the
     /// join operation.
+    //
+    // Note that currently we don't add named struct users or global users to
+    // the worklist in this function directly. That's done in
+    // `FunctionTaintState::update_pointee_taintedtype()`, which we assume all
+    // callers of `update()` go through. (This is true as of this writing.)
     fn update(&mut self, new_pointee_ty: TaintedType) -> Result<bool, String> {
         let mut pointee_ty = self.ty.borrow_mut();
         let joined_pointee_ty = pointee_ty.join(&new_pointee_ty)?;
@@ -231,6 +276,16 @@ impl TaintedType {
     /// Create a (fresh, unaliased) tainted pointer to the given `TaintedType`
     pub fn tainted_ptr_to(pointee: TaintedType) -> Self {
         Self::TaintedPointer(Pointee::new(pointee))
+    }
+
+    /// Create a pointer to the given `Pointee`
+    pub fn untainted_ptr_to_pointee(pointee: Pointee) -> Self {
+        Self::UntaintedPointer(pointee)
+    }
+
+    /// Create a tainted pointer to the given `Pointee`
+    pub fn tainted_ptr_to_pointee(pointee: Pointee) -> Self {
+        Self::TaintedPointer(pointee)
     }
 
     /// Create a struct of the given elements, assuming that no pointers to those
@@ -382,6 +437,8 @@ struct FunctionTaintState<'m> {
     module: &'m Module,
     /// Reference to the module's named struct types
     named_struct_defs: Rc<RefCell<NamedStructDefs<'m>>>,
+    /// Reference to the module's globals
+    globals: Rc<RefCell<Globals<'m>>>,
     /// Reference to the module's worklist
     worklist: Rc<RefCell<Worklist<'m>>>,
 }
@@ -392,6 +449,7 @@ impl<'m> FunctionTaintState<'m> {
         taintmap: HashMap<Name, TaintedType>,
         module: &'m Module,
         named_struct_defs: Rc<RefCell<NamedStructDefs<'m>>>,
+        globals: Rc<RefCell<Globals<'m>>>,
         worklist: Rc<RefCell<Worklist<'m>>>,
     ) -> Self {
         Self {
@@ -399,6 +457,7 @@ impl<'m> FunctionTaintState<'m> {
             map: taintmap,
             module,
             named_struct_defs,
+            globals,
             worklist,
         }
     }
@@ -459,9 +518,6 @@ impl<'m> FunctionTaintState<'m> {
     }
 
     /// Get the `TaintedType` of a `Constant`.
-    /// If the `Constant` is a `GlobalReference`, we'll create a fresh
-    /// `TaintedType` for the global being referenced; we'll assume the global
-    /// hasn't been created yet.
     fn get_type_of_constant(&self, constant: &Constant) -> Result<TaintedType, String> {
         match constant {
             Constant::Int { .. } => Ok(TaintedType::UntaintedValue),
@@ -484,8 +540,9 @@ impl<'m> FunctionTaintState<'m> {
             },
             Constant::Undef(ty) => Ok(TaintedType::from_llvm_type(ty)),
             Constant::BlockAddress => Ok(TaintedType::UntaintedValue), // technically a pointer, but for our purposes an opaque constant
-            Constant::GlobalReference { ty, .. } => {
-                Ok(TaintedType::untainted_ptr_to(TaintedType::from_llvm_type(ty)))
+            Constant::GlobalReference { name, ty } => {
+                let mut globals = self.globals.borrow_mut();
+                Ok(globals.get_type_of_global(name.clone(), ty, &self.name).clone())
             },
             Constant::Add(a) => self.get_type_of_constant_binop(a),
             Constant::Sub(s) => self.get_type_of_constant_binop(s),
@@ -594,6 +651,12 @@ impl<'m> FunctionTaintState<'m> {
                     worklist.add(user);
                 }
             }
+            if let Some(global_name) = &pointee.global {
+                let mut worklist = self.worklist.borrow_mut();
+                for user in self.globals.borrow().get_global_users(global_name) {
+                    worklist.add(user);
+                }
+            }
             Ok(true)
         } else {
             Ok(false)
@@ -616,6 +679,9 @@ struct ModuleTaintState<'m> {
 
     /// Named structs used in the module, and their definitions (taint statuses)
     named_struct_defs: Rc<RefCell<NamedStructDefs<'m>>>,
+
+    /// Globals used in the module, and their definitions (taint statuses)
+    globals: Rc<RefCell<Globals<'m>>>,
 
     /// Map from function name to the names of its callers.
     /// Whenever a function summary changes, we add its callers to the worklist
@@ -831,6 +897,8 @@ impl<'m> NamedStructDefs<'m> {
             },
             TaintedType::UntaintedPointer(pointee) | TaintedType::TaintedPointer(pointee) => {
                 let pointee_ty: &TaintedType = &pointee.ty();
+                let existing_struct_name = &pointee.named_struct;
+                let existing_global = &pointee.global;
                 match pointee_ty {
                     TaintedType::TaintedValue | TaintedType::UntaintedValue => {
                         // We expect that indices.peek() would give None in this
@@ -902,7 +970,15 @@ impl<'m> NamedStructDefs<'m> {
                                 })?;
                                 let mut pointee = pointee.clone(); // release the borrow of `self` due to `elements`
                                 if let Some(struct_name) = struct_name {
+                                    // we just entered a new named struct, that's our name
                                     pointee.set_struct_name(struct_name)?;
+                                } else if let Some(struct_name) = existing_struct_name {
+                                    // inherit the parent pointer's named struct tag
+                                    pointee.set_struct_name(struct_name.clone())?;
+                                }
+                                if let Some(global_name) = existing_global {
+                                    // inherit the parent pointer's global name
+                                    pointee.set_global_name(global_name.clone())?;
                                 }
                                 let pointer_to_element = {
                                     if self.is_type_tainted(parent_ptr, cur_fn) {
@@ -927,6 +1003,56 @@ impl<'m> NamedStructDefs<'m> {
 impl<'m> Debug for NamedStructDefs<'m> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{{NamedStructDefs for module {:?}, with {} definitions}}", &self.module.name, self.named_struct_types.keys().count())
+    }
+}
+
+struct Globals<'m> {
+    /// Map from the name of a global, to the (currently believed) type for
+    /// that global. This type will always be a pointer type.
+    global_types: HashMap<Name, TaintedType>,
+
+    /// Map from the name of a global, to the names of functions that use that
+    /// global.
+    /// Whenever the type of a global changes, we add all of the functions that
+    /// use it to the worklist, because the new type could affect inferred types
+    /// in those functions.
+    global_users: HashMap<Name, HashSet<&'m str>>,
+}
+
+impl<'m> Globals<'m> {
+    fn new() -> Self {
+        Self {
+            global_types: HashMap::new(),
+            global_users: HashMap::new(),
+        }
+    }
+
+    /// Get the (currently believed) `TaintedType` of the global with the given
+    /// name and LLVM `Type`. This `TaintedType` will always be a pointer type.
+    ///
+    /// `llvm_pointee_ty` should be the pointee type, not including the implicit
+    /// pointer.
+    ///
+    /// Marks the current function (whose name is provided as an argument) as a
+    /// user of this global.
+    ///
+    /// Creates an untainted `TaintedType` for this global if no type previously
+    /// existed for it.
+    fn get_type_of_global(&mut self, name: Name, llvm_pointee_ty: &Type, cur_fn: &'m str) -> &mut TaintedType {
+        self.global_users.entry(name.clone()).or_default().insert(cur_fn.into());
+        self.global_types.entry(name.clone()).or_insert_with(|| {
+            let pointee = Pointee::new_global_contents(TaintedType::from_llvm_type(llvm_pointee_ty), name);
+            TaintedType::untainted_ptr_to_pointee(pointee)
+        })
+    }
+
+    /// Get the names of the functions which are currently known to use the
+    /// global with the given name.
+    fn get_global_users(&self, global_name: &Name) -> impl IntoIterator<Item = &'m str> {
+        match self.global_users.get(global_name) {
+            None => vec![],
+            Some(users) => users.iter().copied().collect::<Vec<&'m str>>(),
+        }
     }
 }
 
@@ -997,6 +1123,7 @@ impl<'m> ModuleTaintState<'m> {
         start_fn_taint_map: HashMap<Name, TaintedType>,
     ) -> Self {
         let named_struct_defs = Rc::new(RefCell::new(NamedStructDefs::new(module)));
+        let globals = Rc::new(RefCell::new(Globals::new()));
         let worklist = Rc::new(RefCell::new(std::iter::once(start_fn).collect()));
         Self {
             module,
@@ -1008,12 +1135,14 @@ impl<'m> ModuleTaintState<'m> {
                     start_fn_taint_map,
                     module,
                     named_struct_defs.clone(),
+                    globals.clone(),
                     worklist.clone()
                 ),
             ))
             .collect(),
             fn_summaries: HashMap::new(),
             named_struct_defs,
+            globals,
             callers: HashMap::new(),
             worklist,
             cur_fn: start_fn,
@@ -1125,6 +1254,7 @@ impl<'m> ModuleTaintState<'m> {
         let module = self.module; // this is for the borrow checker - allows us to access `module` without needing to borrow `self`
         let named_struct_defs: &Rc<_> = &self.named_struct_defs; // similarly for the borrow checker - see note on above line
         let worklist: &Rc<_> = &self.worklist; // similarly for the borrow checker - see note on above line
+        let globals: &Rc<_> = &self.globals; // similarly for the borrow checker - see note on above line
         let cur_fn = self
             .fn_taint_states
             .entry(f.name.clone())
@@ -1139,6 +1269,7 @@ impl<'m> ModuleTaintState<'m> {
                         .collect(),
                     module,
                     Rc::clone(named_struct_defs),
+                    Rc::clone(globals),
                     Rc::clone(worklist),
                 )
             });
