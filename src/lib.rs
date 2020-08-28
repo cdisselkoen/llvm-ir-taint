@@ -770,8 +770,8 @@ impl<'m> NamedStructDefs<'m> {
                                 );
                                 let pointee = elements.get(index as usize).ok_or_else(|| {
                                     format!(
-                                        "get_element_ptr: index out of range: index {:?} in struct {:?}",
-                                        index, pointee
+                                        "get_element_ptr: index out of range: index {:?} in struct {:?} with {} elements",
+                                        index, pointee, elements.len()
                                     )
                                 })?;
                                 let pointee = pointee.clone(); // release the borrow of `self` due to `elements`
