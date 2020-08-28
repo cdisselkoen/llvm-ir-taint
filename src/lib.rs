@@ -3,7 +3,7 @@ use llvm_ir::constant::ConstBinaryOp;
 use llvm_ir::instruction::{groups, BinaryOp, HasResult, UnaryOp};
 use llvm_ir::types::NamedStructDef;
 use llvm_ir::*;
-use std::cell::RefCell;
+use std::cell::{Ref, RefCell};
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::convert::TryInto;
@@ -90,20 +90,12 @@ pub enum TaintedType {
     /// A tainted value which is not a pointer or struct.
     /// This may also be a (first-class) array or vector with a tainted element type.
     TaintedValue,
-    /// An untainted pointer to either a scalar or an array. The inner type is the
-    /// pointed-to type, or the element type of the array.
-    ///
-    /// `Rc<RefCell<>>` allows us to have multiple pointers to the same
-    /// underlying type.
-    UntaintedPointer(Rc<RefCell<TaintedType>>),
-    /// A tainted pointer to either a scalar or an array. The inner type is the
-    /// pointed-to type, or the element type of the array.
-    ///
-    /// `Rc<RefCell<>>` allows us to have multiple pointers to the same
-    /// underlying type.
-    TaintedPointer(Rc<RefCell<TaintedType>>),
+    /// An untainted pointer to either a scalar or an array.
+    UntaintedPointer(Pointee),
+    /// A tainted pointer to either a scalar or an array.
+    TaintedPointer(Pointee),
     /// A struct, with the given element types
-    Struct(Vec<Rc<RefCell<TaintedType>>>),
+    Struct(Vec<Pointee>),
     /// A named struct, with the given name. To get the actual type of the named
     /// struct's contents, use `get_named_struct_type` in the `ModuleTaintState`
     /// or `ModuleTaintResult`. (This avoids infinite recursion in
@@ -115,15 +107,128 @@ pub enum TaintedType {
     TaintedFnPtr,
 }
 
+/// A `Pointee` represents the `TaintedType` which a pointer points to.
+/// A `Pointee` may represent either a scalar or an array, or an element of a
+/// struct (either named or not).
+///
+/// Cloning a `Pointee` gives another reference to the _same_ `Pointee`; if one
+/// clone is updated with `update()` or `taint()`, all clones will be updated.
+#[derive(PartialEq, Eq, Clone, Debug)]
+pub struct Pointee {
+    /// The pointed-to type, or the element type of the array.
+    /// `Rc<RefCell<>>` allows us to have multiple pointers to the same
+    /// underlying type.
+    ty: Rc<RefCell<TaintedType>>,
+
+    /// If this is a pointer to an element of a _named_ struct, here is the name
+    /// of that named struct.
+    ///
+    /// We have this so that if a change is made to the pointer type, we know
+    /// that the users of this named struct need to be re-added to the worklist.
+    named_struct: Option<String>,
+}
+
+impl Pointee {
+    /// Construct a new pointee with the given `TaintedType` for its contents.
+    /// This will be assumed to be distinct from all previously created
+    /// `Pointee`s -- that is, no pointer aliasing.
+    fn new(pointee_ty: TaintedType) -> Self {
+        Self {
+            ty: Rc::new(RefCell::new(pointee_ty)),
+            named_struct: None,
+        }
+    }
+
+    /// Construct a new pointee representing an element of the named struct with
+    /// the given name.
+    /// This will be assumed to be distinct from all previously created
+    /// `Pointee`s -- that is, no pointer aliasing.
+    #[allow(dead_code)]
+    fn new_named_struct_element(element_ty: TaintedType, struct_name: String) -> Self {
+        Self {
+            ty: Rc::new(RefCell::new(element_ty)),
+            named_struct: Some(struct_name),
+        }
+    }
+
+    /// Get a `Ref` to the `TaintedType` representing the pointee's contents
+    pub fn ty(&self) -> Ref<TaintedType> {
+        self.ty.borrow()
+    }
+
+    /// Mark the pointee as being an element of the given named struct.
+    ///
+    /// If the pointee is later updated with `update()` or `taint()`, we will
+    /// re-add all users of this named struct to the worklist.
+    fn set_struct_name(&mut self, struct_name: String) -> Result<(), String> {
+        match &mut self.named_struct {
+            ns @ None => {
+                *ns = Some(struct_name);
+                Ok(())
+            },
+            Some(old_name) if &struct_name == old_name => Ok(()), // no change
+            Some(old_name) => Err(format!(
+                "Setting pointee struct name to {:?}, but it already was set to {:?}",
+                struct_name, old_name
+            )),
+        }
+    }
+
+    /// Update the `TaintedType` representing the pointed-to contents with the
+    /// given `TaintedType`.
+    /// This perfoms a `join` of the given `TaintedType` and the previous
+    /// `TaintedType` assigned to the contents (if any).
+    ///
+    /// Returns `true` if the contents' `TaintedType` changed, accounting for the
+    /// join operation.
+    fn update(&mut self, new_pointee_ty: TaintedType) -> Result<bool, String> {
+        let mut pointee_ty = self.ty.borrow_mut();
+        let joined_pointee_ty = pointee_ty.join(&new_pointee_ty)?;
+        if &*pointee_ty == &joined_pointee_ty {
+            // no change is necessary
+            Ok(false)
+        } else {
+            // update the type.
+            // Note that updating the `Pointee` like this updates all the
+            // pointers to this `Pointee`.
+            // For instance, if we have a pointer to an array, then GEP to get
+            // pointer to 3rd element, then store a tainted value to that 3rd
+            // element, we want to update _both pointers_ (the original array
+            // pointer, and the element pointer) to have type
+            // pointer-to-tainted.
+            *pointee_ty = joined_pointee_ty;
+            Ok(true)
+        }
+    }
+
+    /// Mark the pointed-to contents as tainted.
+    ///
+    /// Returns `true` if the contents' `TaintedType` changed.
+    #[allow(dead_code)]
+    fn taint(&mut self) -> bool {
+        let mut pointee_ty = self.ty.borrow_mut();
+        let tainted_ty = pointee_ty.to_tainted();
+        if &*pointee_ty == &tainted_ty {
+            // no change is necessary
+            false
+        } else {
+            // update the type.
+            // See notes on and inside `update()`
+            *pointee_ty = tainted_ty;
+            true
+        }
+    }
+}
+
 impl TaintedType {
     /// Create a (fresh, unaliased) pointer to the given `TaintedType`
     pub fn untainted_ptr_to(pointee: TaintedType) -> Self {
-        Self::UntaintedPointer(Rc::new(RefCell::new(pointee)))
+        Self::UntaintedPointer(Pointee::new(pointee))
     }
 
     /// Create a (fresh, unaliased) tainted pointer to the given `TaintedType`
     pub fn tainted_ptr_to(pointee: TaintedType) -> Self {
-        Self::TaintedPointer(Rc::new(RefCell::new(pointee)))
+        Self::TaintedPointer(Pointee::new(pointee))
     }
 
     /// Create a struct of the given elements, assuming that no pointers to those
@@ -132,9 +237,14 @@ impl TaintedType {
         Self::Struct(
             elements
                 .into_iter()
-                .map(|ty| Rc::new(RefCell::new(ty)))
+                .map(|ty| Pointee::new(ty))
                 .collect(),
         )
+    }
+
+    /// Create a struct of the given `Pointee`s
+    pub fn struct_of_pointees(elements: impl IntoIterator<Item = Pointee>) -> Self {
+        Self::Struct(elements.into_iter().collect())
     }
 
     /// Produce the equivalent (untainted) `TaintedType` for a given LLVM type.
@@ -163,7 +273,8 @@ impl TaintedType {
     /// Is this type tainted?
     ///
     /// This function only works on non-struct types. For a more generic function
-    /// that works on all types, use `ModuleTaintState::is_type_tainted()`.
+    /// that works on all types, use `ModuleTaintState::is_type_tainted()` or
+    /// `ModuleTaintResult::is_type_tainted()`.
     pub fn is_tainted_nonstruct(&self) -> bool {
         match self {
             TaintedType::UntaintedValue => false,
@@ -182,10 +293,16 @@ impl TaintedType {
         match self {
             TaintedType::UntaintedValue => TaintedType::TaintedValue,
             TaintedType::TaintedValue => TaintedType::TaintedValue,
-            TaintedType::UntaintedPointer(rc) => TaintedType::TaintedPointer(rc.clone()),
-            TaintedType::TaintedPointer(rc) => TaintedType::TaintedPointer(rc.clone()),
-            TaintedType::Struct(elements) => {
-                TaintedType::struct_of(elements.iter().map(|e| e.borrow().to_tainted()))
+            TaintedType::UntaintedPointer(pointee) => TaintedType::TaintedPointer(pointee.clone()),
+            TaintedType::TaintedPointer(pointee) => TaintedType::TaintedPointer(pointee.clone()),
+            TaintedType::Struct(_elements) => {
+                unimplemented!("to_tainted on a struct")
+                /*
+                for element in elements {
+                    element.taint();
+                }
+                TaintedType::struct_of_pointees(elements.clone())
+                */
             },
             TaintedType::NamedStruct(_) => unimplemented!("to_tainted on a named struct"),
             TaintedType::UntaintedFnPtr => TaintedType::TaintedFnPtr,
@@ -208,16 +325,16 @@ impl TaintedType {
             (TaintedValue, UntaintedValue) => Ok(TaintedValue),
             (TaintedValue, TaintedValue) => Ok(TaintedValue),
             (UntaintedPointer(pointee1), UntaintedPointer(pointee2)) => Ok(Self::untainted_ptr_to(
-                pointee1.borrow().join(&*pointee2.borrow())?,
+                pointee1.ty().join(&*pointee2.ty())?,
             )),
             (UntaintedPointer(pointee1), TaintedPointer(pointee2)) => Ok(Self::tainted_ptr_to(
-                pointee1.borrow().join(&*pointee2.borrow())?,
+                pointee1.ty().join(&*pointee2.ty())?,
             )),
             (TaintedPointer(pointee1), UntaintedPointer(pointee2)) => Ok(Self::tainted_ptr_to(
-                pointee1.borrow().join(&*pointee2.borrow())?,
+                pointee1.ty().join(&*pointee2.ty())?,
             )),
             (TaintedPointer(pointee1), TaintedPointer(pointee2)) => Ok(Self::tainted_ptr_to(
-                pointee1.borrow().join(&*pointee2.borrow())?,
+                pointee1.ty().join(&*pointee2.ty())?,
             )),
             (Struct(elements1), Struct(elements2)) => {
                 if elements1.len() != elements2.len() {
@@ -231,7 +348,7 @@ impl TaintedType {
                         elements1
                             .iter()
                             .zip(elements2.iter())
-                            .map(|(el1, el2)| el1.borrow().join(&el2.borrow()))
+                            .map(|(el1, el2)| el1.ty().join(&el2.ty()))
                             .collect::<Result<Vec<_>, String>>()?
                             .into_iter(),
                     ))
@@ -456,31 +573,15 @@ impl<'m> FunctionTaintState<'m> {
 
     /// Update the given pointee to the given `TaintedType`.
     /// This performs a `join` just like `update_var_taintedtype`.
-    /// `pointee` should be the `Rc` from inside a
-    /// `TaintedType::UntaintedPointer` or `TaintedType::TaintedPointer`.
     ///
     /// Returns `true` if the pointee's `TaintedType` changed, accounting for the
     /// join operation.
     fn update_pointee_taintedtype(
         &self,
-        pointee: &Rc<RefCell<TaintedType>>,
+        pointee: &mut Pointee,
         new_pointee: TaintedType,
     ) -> Result<bool, String> {
-        let mut pointee = pointee.borrow_mut();
-        let joined_pointee_type = new_pointee.join(&pointee)?;
-        if &*pointee == &joined_pointee_type {
-            // no change is necessary
-            Ok(false)
-        } else {
-            // update the address type.
-            // Storing to the `Rc` ensures that other pointers to the same type will
-            // automatically be updated as well. For instance, if we have a pointer to
-            // an array, then GEP to get pointer to 3rd element, then store a tainted
-            // value to that 3rd element, we want to update _both pointers_ (the original
-            // array pointer, and the element pointer) to have type pointer-to-tainted.
-            *pointee = joined_pointee_type;
-            Ok(true)
-        }
+        pointee.update(new_pointee)
     }
 }
 
@@ -659,7 +760,7 @@ impl<'m> NamedStructDefs<'m> {
             TaintedType::TaintedPointer(_) => true,
             TaintedType::Struct(elements) => {
                 // a struct is tainted if any of its elements are
-                elements.iter().any(|e| self.is_type_tainted(&e.borrow(), cur_fn))
+                elements.iter().any(|e| self.is_type_tainted(&e.ty(), cur_fn))
             },
             TaintedType::NamedStruct(name) => {
                 let inner_ty = self.get_named_struct_type(name.into(), cur_fn).clone();
@@ -703,9 +804,9 @@ impl<'m> NamedStructDefs<'m> {
             TaintedType::Struct(_) | TaintedType::NamedStruct(_) => {
                 Err("get_element_ptr: address is not a pointer, or too many indices".into())
             },
-            TaintedType::UntaintedPointer(rc) | TaintedType::TaintedPointer(rc) => {
-                let pointee: &TaintedType = &rc.borrow();
-                match pointee {
+            TaintedType::UntaintedPointer(pointee) | TaintedType::TaintedPointer(pointee) => {
+                let pointee_ty: &TaintedType = &pointee.ty();
+                match pointee_ty {
                     TaintedType::TaintedValue | TaintedType::UntaintedValue => {
                         // We expect that indices.peek() would give None in this
                         // case. However, there may be an extra index due to
@@ -713,18 +814,18 @@ impl<'m> NamedStructDefs<'m> {
                         // (which are TaintedValue or UntaintedValue in our type
                         // system). So we just ignore any extra indices.
                         if self.is_type_tainted(parent_ptr, cur_fn) {
-                            Ok(TaintedType::TaintedPointer(rc.clone()))
+                            Ok(TaintedType::TaintedPointer(pointee.clone()))
                         } else {
-                            Ok(TaintedType::UntaintedPointer(rc.clone()))
+                            Ok(TaintedType::UntaintedPointer(pointee.clone()))
                         }
                     },
                     TaintedType::TaintedFnPtr | TaintedType::UntaintedFnPtr => {
                         match indices.peek() {
                             None if self.is_type_tainted(parent_ptr, cur_fn) => {
-                                Ok(TaintedType::TaintedPointer(rc.clone()))
+                                Ok(TaintedType::TaintedPointer(pointee.clone()))
                             },
                             None => {
-                                Ok(TaintedType::UntaintedPointer(rc.clone()))
+                                Ok(TaintedType::UntaintedPointer(pointee.clone()))
                             },
                             Some(_) => {
                                 Err("get_element_ptr on a function pointer, or too many indices".into())
@@ -739,17 +840,17 @@ impl<'m> NamedStructDefs<'m> {
                         // cases.
                         match indices.next() {
                             None if self.is_type_tainted(inner_ptr, cur_fn) => {
-                                Ok(TaintedType::TaintedPointer(rc.clone()))
+                                Ok(TaintedType::TaintedPointer(pointee.clone()))
                             },
-                            None => Ok(TaintedType::UntaintedPointer(rc.clone())),
+                            None => Ok(TaintedType::UntaintedPointer(pointee.clone())),
                             Some(_) => self._get_element_ptr(cur_fn, inner_ptr, indices),
                         }
                     },
                     TaintedType::Struct(_) | TaintedType::NamedStruct(_) => {
-                        let elements = match pointee {
-                            TaintedType::Struct(elements) => elements,
+                        let (elements, struct_name) = match pointee_ty {
+                            TaintedType::Struct(elements) => (elements, None),
                             TaintedType::NamedStruct(name) => match self.get_named_struct_type(name.into(), cur_fn) {
-                                TaintedType::Struct(elements) => elements,
+                                TaintedType::Struct(elements) => (elements, Some(name.clone())),
                                 ty => panic!("expected get_named_struct_type to return TaintedType::Struct; got {:?}", ty),
                             },
                             _ => panic!("Only expected Struct or NamedStruct case here"),
@@ -774,7 +875,10 @@ impl<'m> NamedStructDefs<'m> {
                                         index, pointee, elements.len()
                                     )
                                 })?;
-                                let pointee = pointee.clone(); // release the borrow of `self` due to `elements`
+                                let mut pointee = pointee.clone(); // release the borrow of `self` due to `elements`
+                                if let Some(struct_name) = struct_name {
+                                    pointee.set_struct_name(struct_name)?;
+                                }
                                 let pointer_to_element = {
                                     if self.is_type_tainted(parent_ptr, cur_fn) {
                                         TaintedType::TaintedPointer(pointee)
@@ -921,7 +1025,7 @@ impl<'m> ModuleTaintState<'m> {
         fn_name
     }
 
-    fn get_cur_fn<'a>(&'a mut self) -> &'a mut FunctionTaintState<'m> {
+    fn get_cur_fn(&mut self) -> &mut FunctionTaintState<'m> {
         let cur_fn_name: &str = &self.cur_fn;
         self.fn_taint_states
             .get_mut(cur_fn_name.into())
@@ -1061,9 +1165,9 @@ impl<'m> ModuleTaintState<'m> {
                         TaintedType::TaintedValue | TaintedType::TaintedFnPtr => {
                             TaintedType::from_llvm_type(&bc.to_type).to_tainted()
                         },
-                        TaintedType::UntaintedPointer(rc) => match bc.to_type.as_ref() {
+                        TaintedType::UntaintedPointer(pointee) => match bc.to_type.as_ref() {
                             Type::PointerType { pointee_type, .. } => {
-                                let result_pointee_type = if self.is_type_tainted(&rc.borrow()) {
+                                let result_pointee_type = if self.is_type_tainted(&pointee.ty()) {
                                     TaintedType::from_llvm_type(&pointee_type).to_tainted()
                                 } else {
                                     TaintedType::from_llvm_type(&pointee_type)
@@ -1072,9 +1176,9 @@ impl<'m> ModuleTaintState<'m> {
                             },
                             _ => return Err("Bitcast from pointer to non-pointer".into()), // my reading of the LLVM 9 LangRef disallows this
                         },
-                        TaintedType::TaintedPointer(rc) => match bc.to_type.as_ref() {
+                        TaintedType::TaintedPointer(pointee) => match bc.to_type.as_ref() {
                             Type::PointerType { pointee_type, .. } => {
-                                let result_pointee_type = if self.is_type_tainted(&rc.borrow()) {
+                                let result_pointee_type = if self.is_type_tainted(&pointee.ty()) {
                                     TaintedType::from_llvm_type(&pointee_type).to_tainted()
                                 } else {
                                     TaintedType::from_llvm_type(&pointee_type)
@@ -1130,7 +1234,7 @@ impl<'m> ModuleTaintState<'m> {
                         TaintedType::untainted_ptr_to(cur_fn.get_type_of_operand(&ev.aggregate)?);
                     let element_ptr_ty = self.get_element_ptr(&ptr_to_struct, &ev.indices)?;
                     let element_ty = match element_ptr_ty {
-                        TaintedType::UntaintedPointer(rc) => rc.borrow().clone(),
+                        TaintedType::UntaintedPointer(pointee) => pointee.ty().clone(),
                         _ => return Err("ExtractValue: expected get_element_ptr to return an UntaintedPointer here".into()),
                     };
                     self.get_cur_fn().update_var_taintedtype(ev.get_result().clone(), element_ty)
@@ -1175,16 +1279,16 @@ impl<'m> ModuleTaintState<'m> {
                                 &load.address
                             ));
                         },
-                        TaintedType::UntaintedPointer(pointee_type) => {
-                            pointee_type.borrow().clone()
+                        TaintedType::UntaintedPointer(pointee) => {
+                            pointee.ty().clone()
                         },
-                        TaintedType::TaintedPointer(pointee_type) => {
+                        TaintedType::TaintedPointer(pointee) => {
                             // we allow loading untainted data through a tainted
                             // pointer, for this analysis. Caller is welcome to
                             // do post-processing to taint every result of a
                             // load from a tainted address and then rerun the
                             // tainting algorithm.
-                            pointee_type.borrow().clone()
+                            pointee.ty().clone()
                         },
                     };
                     cur_fn.update_var_taintedtype(load.get_result().clone(), result_ty)
@@ -1205,13 +1309,13 @@ impl<'m> ModuleTaintState<'m> {
                             "Store: address is not a pointer: {:?}",
                             &store.address
                         )),
-                        TaintedType::UntaintedPointer(rc) | TaintedType::TaintedPointer(rc) => {
+                        TaintedType::UntaintedPointer(mut pointee) | TaintedType::TaintedPointer(mut pointee) => {
                             // update the store address's type based on the value being stored through it.
                             // specifically, update the pointee in that address type:
                             // e.g., if we're storing a tainted value, we want
                             // to update the address type to "pointer to tainted"
                             let new_value_type = cur_fn.get_type_of_operand(&store.value)?;
-                            cur_fn.update_pointee_taintedtype(&rc, new_value_type)
+                            cur_fn.update_pointee_taintedtype(&mut pointee, new_value_type)
                         },
                     }
                 },
@@ -1299,11 +1403,11 @@ impl<'m> ModuleTaintState<'m> {
                                     let value_operand = call.arguments.get(1).map(|(op, _)| op).ok_or_else(|| format!("Expected llvm.memset to have at least three arguments, but it has {}", call.arguments.len()))?;
                                     let address_ty = cur_fn.get_type_of_operand(address_operand)?;
                                     let value_ty = cur_fn.get_type_of_operand(value_operand)?;
-                                    let pointee_ty = match address_ty {
-                                        TaintedType::UntaintedPointer(rc) | TaintedType::TaintedPointer(rc) => rc,
+                                    let mut pointee = match address_ty {
+                                        TaintedType::UntaintedPointer(pointee) | TaintedType::TaintedPointer(pointee) => pointee,
                                         _ => return Err(format!("llvm.memset: expected first argument to be a pointer, but it was {:?}", address_ty)),
                                     };
-                                    cur_fn.update_pointee_taintedtype(&pointee_ty, value_ty)
+                                    cur_fn.update_pointee_taintedtype(&mut pointee, value_ty)
                                 } else {
                                     self.process_function_call(call, name)
                                 }
@@ -1486,7 +1590,7 @@ impl<'m> ModuleTaintResult<'m> {
             TaintedType::TaintedPointer(_) => true,
             TaintedType::Struct(elements) => {
                 // a struct is tainted if any of its elements are
-                elements.iter().any(|e| self.is_type_tainted(&e.borrow()))
+                elements.iter().any(|e| self.is_type_tainted(&e.ty()))
             },
             TaintedType::NamedStruct(name) => {
                 let inner_ty = self.get_named_struct_type(name);

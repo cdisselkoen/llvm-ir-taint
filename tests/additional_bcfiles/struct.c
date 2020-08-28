@@ -3,12 +3,13 @@ struct TwoInts {
   int el1;
 };
 
-void called(struct TwoInts* ti, int val) {
-  ti->el1 = val;
+void called(struct TwoInts* ti) {
+  ti->el1 = ti->el0;
 }
 
 int caller(int x) {
   struct TwoInts ti = { 0 };
-  called(&ti, x);
+  ti.el0 = x;
+  called(&ti);
   return ti.el1;
 }

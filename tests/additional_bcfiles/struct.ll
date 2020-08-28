@@ -6,13 +6,13 @@ target triple = "x86_64-apple-macosx10.15.0"
 %struct.TwoInts = type { i32, i32 }
 
 ; Function Attrs: noinline nounwind optnone ssp uwtable
-define void @called(%struct.TwoInts*, i32) #0 {
-  %3 = alloca %struct.TwoInts*, align 8
-  %4 = alloca i32, align 4
-  store %struct.TwoInts* %0, %struct.TwoInts** %3, align 8
-  store i32 %1, i32* %4, align 4
+define void @called(%struct.TwoInts*) #0 {
+  %2 = alloca %struct.TwoInts*, align 8
+  store %struct.TwoInts* %0, %struct.TwoInts** %2, align 8
+  %3 = load %struct.TwoInts*, %struct.TwoInts** %2, align 8
+  %4 = getelementptr inbounds %struct.TwoInts, %struct.TwoInts* %3, i32 0, i32 0
   %5 = load i32, i32* %4, align 4
-  %6 = load %struct.TwoInts*, %struct.TwoInts** %3, align 8
+  %6 = load %struct.TwoInts*, %struct.TwoInts** %2, align 8
   %7 = getelementptr inbounds %struct.TwoInts, %struct.TwoInts* %6, i32 0, i32 1
   store i32 %5, i32* %7, align 4
   ret void
@@ -26,10 +26,12 @@ define i32 @caller(i32) #0 {
   %4 = bitcast %struct.TwoInts* %3 to i8*
   call void @llvm.memset.p0i8.i64(i8* align 4 %4, i8 0, i64 8, i1 false)
   %5 = load i32, i32* %2, align 4
-  call void @called(%struct.TwoInts* %3, i32 %5)
-  %6 = getelementptr inbounds %struct.TwoInts, %struct.TwoInts* %3, i32 0, i32 1
-  %7 = load i32, i32* %6, align 4
-  ret i32 %7
+  %6 = getelementptr inbounds %struct.TwoInts, %struct.TwoInts* %3, i32 0, i32 0
+  store i32 %5, i32* %6, align 4
+  call void @called(%struct.TwoInts* %3)
+  %7 = getelementptr inbounds %struct.TwoInts, %struct.TwoInts* %3, i32 0, i32 1
+  %8 = load i32, i32* %7, align 4
+  ret i32 %8
 }
 
 ; Function Attrs: argmemonly nounwind
