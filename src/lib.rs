@@ -160,106 +160,6 @@ impl TaintedType {
         }
     }
 
-    /// Get the `TaintedType` of a `Constant`.
-    /// If the `Constant` is a `GlobalReference`, we'll create a fresh
-    /// `TaintedType` for the global being referenced; we'll assume the global
-    /// hasn't been created yet.
-    fn from_constant<'m>(
-        constant: &Constant,
-        module: &Module,
-        cur_fn: &'m str,
-        named_struct_defs: &mut NamedStructDefs<'m>,
-    ) -> Result<Self, String> {
-        match constant {
-            Constant::Int { .. } => Ok(TaintedType::UntaintedValue),
-            Constant::Float(_) => Ok(TaintedType::UntaintedValue),
-            Constant::Null(ty) => Ok(TaintedType::from_llvm_type(ty)),
-            Constant::AggregateZero(ty) => Ok(TaintedType::from_llvm_type(ty)),
-            Constant::Struct { values, .. } => {
-                let elements = values
-                    .iter()
-                    .map(|v| Self::from_constant(v, module, cur_fn, named_struct_defs))
-                    .collect::<Result<Vec<_>, _>>()?;
-                Ok(TaintedType::struct_of(elements))
-            },
-            Constant::Array { element_type, .. } => Ok(TaintedType::from_llvm_type(element_type)),
-            Constant::Vector(vec) => {
-                // all elements should be the same type, so we do the type of the first one
-                Ok(TaintedType::from_llvm_type(
-                    &module.type_of(vec.get(0).expect("Constant::Vector should not be empty"))
-                ))
-            },
-            Constant::Undef(ty) => Ok(TaintedType::from_llvm_type(ty)),
-            Constant::BlockAddress => Ok(TaintedType::UntaintedValue), // technically a pointer, but for our purposes an opaque constant
-            Constant::GlobalReference { ty, .. } => {
-                Ok(TaintedType::untainted_ptr_to(TaintedType::from_llvm_type(ty)))
-            },
-            Constant::Add(a) => TaintedType::from_constant_binop(a, module, cur_fn, named_struct_defs),
-            Constant::Sub(s) => TaintedType::from_constant_binop(s, module, cur_fn, named_struct_defs),
-            Constant::Mul(m) => TaintedType::from_constant_binop(m, module, cur_fn, named_struct_defs),
-            Constant::UDiv(u) => TaintedType::from_constant_binop(u, module, cur_fn, named_struct_defs),
-            Constant::SDiv(s) => TaintedType::from_constant_binop(s, module, cur_fn, named_struct_defs),
-            Constant::URem(u) => TaintedType::from_constant_binop(u, module, cur_fn, named_struct_defs),
-            Constant::SRem(s) => TaintedType::from_constant_binop(s, module, cur_fn, named_struct_defs),
-            Constant::And(a) => TaintedType::from_constant_binop(a, module, cur_fn, named_struct_defs),
-            Constant::Or(o) => TaintedType::from_constant_binop(o, module, cur_fn, named_struct_defs),
-            Constant::Xor(x) => TaintedType::from_constant_binop(x, module, cur_fn, named_struct_defs),
-            Constant::LShr(l) => TaintedType::from_constant_binop(l, module, cur_fn, named_struct_defs),
-            Constant::AShr(a) => TaintedType::from_constant_binop(a, module, cur_fn, named_struct_defs),
-            Constant::Shl(s) => TaintedType::from_constant_binop(s, module, cur_fn, named_struct_defs),
-            Constant::FAdd(f) => TaintedType::from_constant_binop(f, module, cur_fn, named_struct_defs),
-            Constant::FSub(f) => TaintedType::from_constant_binop(f, module, cur_fn, named_struct_defs),
-            Constant::FMul(f) => TaintedType::from_constant_binop(f, module, cur_fn, named_struct_defs),
-            Constant::FDiv(f) => TaintedType::from_constant_binop(f, module, cur_fn, named_struct_defs),
-            Constant::FRem(f) => TaintedType::from_constant_binop(f, module, cur_fn, named_struct_defs),
-            Constant::Trunc(t) => TaintedType::from_constant(&t.operand, module, cur_fn, named_struct_defs),
-            Constant::BitCast(b) => TaintedType::from_constant(&b.operand, module, cur_fn, named_struct_defs),
-            Constant::AddrSpaceCast(a) => TaintedType::from_constant(&a.operand, module, cur_fn, named_struct_defs),
-            Constant::ZExt(z) => TaintedType::from_constant(&z.operand, module, cur_fn, named_struct_defs),
-            Constant::SExt(s) => TaintedType::from_constant(&s.operand, module, cur_fn, named_struct_defs),
-            Constant::UIToFP(u) => TaintedType::from_constant(&u.operand, module, cur_fn, named_struct_defs),
-            Constant::SIToFP(s) => TaintedType::from_constant(&s.operand, module, cur_fn, named_struct_defs),
-            Constant::FPExt(f) => TaintedType::from_constant(&f.operand, module, cur_fn, named_struct_defs),
-            Constant::FPTrunc(f) => TaintedType::from_constant(&f.operand, module, cur_fn, named_struct_defs),
-            Constant::FPToUI(f) => TaintedType::from_constant(&f.operand, module, cur_fn, named_struct_defs),
-            Constant::FPToSI(f) => TaintedType::from_constant(&f.operand, module, cur_fn, named_struct_defs),
-            Constant::IntToPtr(itp) => {
-                let int_type = TaintedType::from_constant(&itp.operand, module, cur_fn, named_struct_defs)?;
-                let ptr_type = TaintedType::from_llvm_type(&module.type_of(itp));
-                if int_type.is_tainted_nonstruct() {
-                    Ok(ptr_type.to_tainted())
-                } else {
-                    Ok(ptr_type)
-                }
-            },
-            Constant::PtrToInt(pti) => {
-                let ptr_type = TaintedType::from_constant(&pti.operand, module, cur_fn, named_struct_defs)?;
-                let int_type = TaintedType::from_llvm_type(&module.type_of(pti));
-                if ptr_type.is_tainted_nonstruct() {
-                    Ok(int_type.to_tainted())
-                } else {
-                    Ok(int_type)
-                }
-            },
-            Constant::GetElementPtr(gep) => {
-                let parent_ptr = TaintedType::from_constant(&gep.address, module, cur_fn, named_struct_defs)?;
-                named_struct_defs.get_element_ptr(cur_fn, &parent_ptr, &gep.indices)
-            },
-            _ => unimplemented!("TaintedType::from_constant on {:?}", constant),
-        }
-    }
-
-    /// For `ConstBinaryOp`s where the two operands and the result are all the same LLVM type
-    fn from_constant_binop<'m>(
-        bop: &impl ConstBinaryOp,
-        module: &Module,
-        cur_fn: &'m str,
-        named_struct_defs: &mut NamedStructDefs<'m>,
-    ) -> Result<TaintedType, String> {
-        TaintedType::from_constant(&bop.get_operand0(), module, cur_fn, named_struct_defs)?
-            .join(&TaintedType::from_constant(&bop.get_operand1(), module, cur_fn, named_struct_defs)?)
-    }
-
     /// Is this type tainted?
     ///
     /// This function only works on non-struct types. For a more generic function
@@ -387,7 +287,7 @@ impl<'m> FunctionTaintState<'m> {
     /// Get the `TaintedType` of the given `Operand`, according to the current state.
     fn get_type_of_operand(&self, op: &Operand) -> Result<TaintedType, String> {
         match op {
-            Operand::ConstantOperand(constant) => TaintedType::from_constant(constant, &self.module, &self.name, &mut self.named_struct_defs.borrow_mut()),
+            Operand::ConstantOperand(constant) => self.get_type_of_constant(constant),
             Operand::MetadataOperand => Ok(TaintedType::UntaintedValue),
             Operand::LocalOperand { name, .. } => match self.map.get(name) {
                 Some(ty) => Ok(ty.clone()),
@@ -433,6 +333,96 @@ impl<'m> FunctionTaintState<'m> {
                 op
             )),
         }
+    }
+
+    /// Get the `TaintedType` of a `Constant`.
+    /// If the `Constant` is a `GlobalReference`, we'll create a fresh
+    /// `TaintedType` for the global being referenced; we'll assume the global
+    /// hasn't been created yet.
+    fn get_type_of_constant(&self, constant: &Constant) -> Result<TaintedType, String> {
+        match constant {
+            Constant::Int { .. } => Ok(TaintedType::UntaintedValue),
+            Constant::Float(_) => Ok(TaintedType::UntaintedValue),
+            Constant::Null(ty) => Ok(TaintedType::from_llvm_type(ty)),
+            Constant::AggregateZero(ty) => Ok(TaintedType::from_llvm_type(ty)),
+            Constant::Struct { values, .. } => {
+                let elements = values
+                    .iter()
+                    .map(|v| self.get_type_of_constant(v))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(TaintedType::struct_of(elements))
+            },
+            Constant::Array { element_type, .. } => Ok(TaintedType::from_llvm_type(element_type)),
+            Constant::Vector(vec) => {
+                // all elements should be the same type, so we do the type of the first one
+                Ok(TaintedType::from_llvm_type(
+                    &self.module.type_of(vec.get(0).expect("Constant::Vector should not be empty"))
+                ))
+            },
+            Constant::Undef(ty) => Ok(TaintedType::from_llvm_type(ty)),
+            Constant::BlockAddress => Ok(TaintedType::UntaintedValue), // technically a pointer, but for our purposes an opaque constant
+            Constant::GlobalReference { ty, .. } => {
+                Ok(TaintedType::untainted_ptr_to(TaintedType::from_llvm_type(ty)))
+            },
+            Constant::Add(a) => self.get_type_of_constant_binop(a),
+            Constant::Sub(s) => self.get_type_of_constant_binop(s),
+            Constant::Mul(m) => self.get_type_of_constant_binop(m),
+            Constant::UDiv(u) => self.get_type_of_constant_binop(u),
+            Constant::SDiv(s) => self.get_type_of_constant_binop(s),
+            Constant::URem(u) => self.get_type_of_constant_binop(u),
+            Constant::SRem(s) => self.get_type_of_constant_binop(s),
+            Constant::And(a) => self.get_type_of_constant_binop(a),
+            Constant::Or(o) => self.get_type_of_constant_binop(o),
+            Constant::Xor(x) => self.get_type_of_constant_binop(x),
+            Constant::LShr(l) => self.get_type_of_constant_binop(l),
+            Constant::AShr(a) => self.get_type_of_constant_binop(a),
+            Constant::Shl(s) => self.get_type_of_constant_binop(s),
+            Constant::FAdd(f) => self.get_type_of_constant_binop(f),
+            Constant::FSub(f) => self.get_type_of_constant_binop(f),
+            Constant::FMul(f) => self.get_type_of_constant_binop(f),
+            Constant::FDiv(f) => self.get_type_of_constant_binop(f),
+            Constant::FRem(f) => self.get_type_of_constant_binop(f),
+            Constant::Trunc(t) => self.get_type_of_constant(&t.operand),
+            Constant::BitCast(b) => self.get_type_of_constant(&b.operand),
+            Constant::AddrSpaceCast(a) => self.get_type_of_constant(&a.operand),
+            Constant::ZExt(z) => self.get_type_of_constant(&z.operand),
+            Constant::SExt(s) => self.get_type_of_constant(&s.operand),
+            Constant::UIToFP(u) => self.get_type_of_constant(&u.operand),
+            Constant::SIToFP(s) => self.get_type_of_constant(&s.operand),
+            Constant::FPExt(f) => self.get_type_of_constant(&f.operand),
+            Constant::FPTrunc(f) => self.get_type_of_constant(&f.operand),
+            Constant::FPToUI(f) => self.get_type_of_constant(&f.operand),
+            Constant::FPToSI(f) => self.get_type_of_constant(&f.operand),
+            Constant::IntToPtr(itp) => {
+                let int_type = self.get_type_of_constant(&itp.operand)?;
+                let ptr_type = TaintedType::from_llvm_type(&self.module.type_of(itp));
+                if int_type.is_tainted_nonstruct() {
+                    Ok(ptr_type.to_tainted())
+                } else {
+                    Ok(ptr_type)
+                }
+            },
+            Constant::PtrToInt(pti) => {
+                let ptr_type = self.get_type_of_constant(&pti.operand)?;
+                let int_type = TaintedType::from_llvm_type(&self.module.type_of(pti));
+                if ptr_type.is_tainted_nonstruct() {
+                    Ok(int_type.to_tainted())
+                } else {
+                    Ok(int_type)
+                }
+            },
+            Constant::GetElementPtr(gep) => {
+                let parent_ptr = self.get_type_of_constant(&gep.address)?;
+                self.named_struct_defs.borrow_mut().get_element_ptr(&self.name, &parent_ptr, &gep.indices)
+            },
+            _ => unimplemented!("get_type_of_constant on {:?}", constant),
+        }
+    }
+
+    /// For `ConstBinaryOp`s where the two operands and the result are all the same LLVM type
+    fn get_type_of_constant_binop(&self, bop: &impl ConstBinaryOp) -> Result<TaintedType, String> {
+        self.get_type_of_constant(&bop.get_operand0())?
+            .join(&self.get_type_of_constant(&bop.get_operand1())?)
     }
 
     /// Update the given variable with the given `TaintedType`.
