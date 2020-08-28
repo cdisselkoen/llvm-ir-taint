@@ -16,6 +16,12 @@ fn get_O3_module() -> Module {
         .unwrap_or_else(|e| panic!("Failed to parse module {:?}: {}", modname, e))
 }
 
+fn get_addl_module() -> Module {
+    let modname = "tests/additional_bcfiles/struct.bc";
+    Module::from_bc_path(&Path::new(modname))
+        .unwrap_or_else(|e| panic!("Failed to parse module {:?}: {}", modname, e))
+}
+
 #[test]
 fn one_struct_element() {
     let funcname = "one_int";
@@ -288,5 +294,36 @@ fn with_ptr() {
             TaintedType::NamedStruct("struct.TwoInts".into()),
             TaintedType::untainted_ptr_to(TaintedType::untainted_ptr_to(TaintedType::NamedStruct("struct.TwoInts".into()))),
         ]),
+    );
+}
+
+#[test]
+fn addl_structtest() {
+    let funcname = "caller";
+    let module = get_addl_module();
+    let config = Config::default();
+
+    // For this function, given tainted input, we check that the final inferred
+    // TaintedType for struct.TwoInts is (untainted, tainted)
+    // and that the final type for %7 in caller() is tainted
+    // Importantly, this requires that the change to struct.TwoInts' type made
+    // in called() actually puts caller() back on the worklist
+    let mtr = do_taint_analysis(
+        &module,
+        &config,
+        funcname,
+        vec![TaintedType::TaintedValue],
+        HashMap::new()
+    );
+    assert_eq!(
+        mtr.get_named_struct_type("struct.TwoInts"),
+        &TaintedType::struct_of(vec![
+            TaintedType::UntaintedValue,
+            TaintedType::TaintedValue,
+        ]),
+    );
+    assert_eq!(
+        mtr.get_function_taint_map("caller").get(&Name::Number(7)),
+        Some(&TaintedType::TaintedValue),
     );
 }
