@@ -9,6 +9,7 @@ use std::collections::{HashMap, HashSet};
 use std::convert::TryInto;
 use std::fmt;
 use std::fmt::Debug;
+use std::iter::FromIterator;
 use std::rc::Rc;
 
 #[non_exhaustive]
@@ -608,7 +609,7 @@ struct ModuleTaintState<'m> {
 
     /// Set of functions which need to be processed again because there's been a
     /// change to taint information which might be relevant to them
-    fn_worklist: HashSet<&'m str>,
+    worklist: Rc<RefCell<Worklist<'m>>>,
 
     /// Name of the function currently being processed
     cur_fn: &'m str,
@@ -905,6 +906,44 @@ impl<'m> Debug for NamedStructDefs<'m> {
     }
 }
 
+/// Keeps track of the set of functions which need to be processed again because
+/// there's been a change to taint information which might be relevant to them.
+///
+/// To construct a `Worklist`, use its `FromIterator` implementation (i.e., use
+/// `.collect()` on an iterator)
+struct Worklist<'m> {
+    fn_names: HashSet<&'m str>,
+}
+
+impl<'m> Worklist<'m> {
+    /// Adds the given function name to the worklist
+    fn add(&mut self, fn_name: &'m str) {
+        self.fn_names.insert(fn_name);
+    }
+
+    /// Gets an arbitrary function name on the worklist, removes it from the
+    /// worklist, and returns it
+    ///
+    /// Returns `None` if the worklist was empty
+    fn pop(&mut self) -> Option<&'m str> {
+        let fn_name: &'m str = self
+            .fn_names
+            .iter()
+            .next()?
+            .clone();
+        self.fn_names.remove(fn_name);
+        Some(fn_name)
+    }
+}
+
+impl<'m> FromIterator<&'m str> for Worklist<'m> {
+    fn from_iter<I: IntoIterator<Item = &'m str>>(iter: I) -> Self {
+        Self {
+            fn_names: iter.into_iter().collect(),
+        }
+    }
+}
+
 impl<'m> ModuleTaintState<'m> {
     /// Compute the tainted state of all variables using our fixpoint algorithm,
     /// and return the resulting `ModuleTaintState`.
@@ -944,7 +983,7 @@ impl<'m> ModuleTaintState<'m> {
             fn_summaries: HashMap::new(),
             named_struct_defs,
             callers: HashMap::new(),
-            fn_worklist: std::iter::once(start_fn).collect(),
+            worklist: Rc::new(RefCell::new(std::iter::once(start_fn).collect())),
             cur_fn: start_fn,
         }
     }
@@ -958,7 +997,7 @@ impl<'m> ModuleTaintState<'m> {
 
     /// Run the fixpoint algorithm to completion.
     fn compute(&mut self) {
-        // We use a worklist fixpoint algorithm where `self.fn_worklist` contains
+        // We use a worklist fixpoint algorithm where `self.worklist` contains
         // names of functions which need another pass because of changes made to
         // the `TaintedType` of variables that may affect that function's analysis.
         //
@@ -971,8 +1010,11 @@ impl<'m> ModuleTaintState<'m> {
         // In either case, this is guaranteed to converge because we only ever
         // change things from untainted to tainted. In the limit, everything becomes
         // tainted, and then nothing can change so the algorithm must terminate.
-        while !self.fn_worklist.is_empty() {
-            let fn_name = self.pop_from_worklist();
+        loop {
+            let fn_name = match self.worklist.borrow_mut().pop() {
+                Some(fn_name) => fn_name,
+                None => break,
+            };
             let changed = match self.module.get_func_by_name(fn_name) {
                 Some(func) => {
                     // internal function (defined in the current module):
@@ -1009,20 +1051,9 @@ impl<'m> ModuleTaintState<'m> {
                 },
             };
             if changed {
-                self.fn_worklist.insert(fn_name);
+                self.worklist.borrow_mut().add(fn_name);
             }
         }
-    }
-
-    fn pop_from_worklist(&mut self) -> &'m str {
-        let fn_name: &'m str = self
-            .fn_worklist
-            .iter()
-            .next()
-            .expect("pop_from_worklist: empty worklist")
-            .clone();
-        self.fn_worklist.remove(fn_name);
-        fn_name
     }
 
     fn get_cur_fn(&mut self) -> &mut FunctionTaintState<'m> {
@@ -1444,7 +1475,7 @@ impl<'m> ModuleTaintState<'m> {
             Entry::Vacant(ventry) => {
                 // no summary: start with the default one (nothing tainted) and add the
                 // called function to the worklist so that we can compute a better one
-                self.fn_worklist.insert(funcname);
+                self.worklist.borrow_mut().add(funcname);
                 ventry.insert(FunctionSummary::new_untainted(
                     call.arguments.iter().map(|(arg, _)| module.type_of(arg)),
                     &module.type_of(call),
@@ -1470,10 +1501,10 @@ impl<'m> ModuleTaintState<'m> {
         if summary.update_params(arg_types)? {
             // summary changed: put all callers of the called function on the worklist
             for caller in self.callers.get(funcname).unwrap().iter() {
-                self.fn_worklist.insert(caller);
+                self.worklist.borrow_mut().add(caller);
             }
             // and also put the called function itself on the worklist
-            self.fn_worklist.insert(funcname);
+            self.worklist.borrow_mut().add(funcname);
         }
         // and finally, for non-void calls, use the return type in the summary to
         // update the type of the result in this function
@@ -1520,7 +1551,7 @@ impl<'m> ModuleTaintState<'m> {
                                 .map(|hs| hs.iter())
                                 .flatten()
                             {
-                                self.fn_worklist.insert(caller);
+                                self.worklist.borrow_mut().add(caller);
                             }
                             Ok(true)
                         } else {
