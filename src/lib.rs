@@ -3,6 +3,7 @@ use llvm_ir::constant::ConstBinaryOp;
 use llvm_ir::instruction::{groups, BinaryOp, HasResult, UnaryOp};
 use llvm_ir::types::NamedStructDef;
 use llvm_ir::*;
+use log::debug;
 use std::cell::{Ref, RefCell};
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
@@ -381,6 +382,8 @@ struct FunctionTaintState<'m> {
     module: &'m Module,
     /// Reference to the module's named struct types
     named_struct_defs: Rc<RefCell<NamedStructDefs<'m>>>,
+    /// Reference to the module's worklist
+    worklist: Rc<RefCell<Worklist<'m>>>,
 }
 
 impl<'m> FunctionTaintState<'m> {
@@ -389,12 +392,14 @@ impl<'m> FunctionTaintState<'m> {
         taintmap: HashMap<Name, TaintedType>,
         module: &'m Module,
         named_struct_defs: Rc<RefCell<NamedStructDefs<'m>>>,
+        worklist: Rc<RefCell<Worklist<'m>>>,
     ) -> Self {
         Self {
             name,
             map: taintmap,
             module,
             named_struct_defs,
+            worklist,
         }
     }
 
@@ -582,7 +587,17 @@ impl<'m> FunctionTaintState<'m> {
         pointee: &mut Pointee,
         new_pointee: TaintedType,
     ) -> Result<bool, String> {
-        pointee.update(new_pointee)
+        if pointee.update(new_pointee)? {
+            if let Some(struct_name) = &pointee.named_struct {
+                let mut worklist = self.worklist.borrow_mut();
+                for user in self.named_struct_defs.borrow().get_named_struct_users(struct_name) {
+                    worklist.add(user);
+                }
+            }
+            Ok(true)
+        } else {
+            Ok(false)
+        }
     }
 }
 
@@ -752,6 +767,15 @@ impl<'m> NamedStructDefs<'m> {
         })
     }
 
+    /// Get the names of the functions which are currently known to use the named
+    /// struct with the given name.
+    fn get_named_struct_users(&self, struct_name: &str) -> impl IntoIterator<Item = &'m str> {
+        match self.named_struct_users.get(struct_name) {
+            None => vec![],
+            Some(users) => users.iter().copied().collect::<Vec<&'m str>>(),
+        }
+    }
+
     /// Is this type tainted (or, for structs, is any element of the struct tainted)
     fn is_type_tainted(&mut self, ty: &TaintedType, cur_fn: &'m str) -> bool {
         match ty {
@@ -918,6 +942,7 @@ struct Worklist<'m> {
 impl<'m> Worklist<'m> {
     /// Adds the given function name to the worklist
     fn add(&mut self, fn_name: &'m str) {
+        debug!("Adding {:?} to worklist", fn_name);
         self.fn_names.insert(fn_name);
     }
 
@@ -972,18 +997,25 @@ impl<'m> ModuleTaintState<'m> {
         start_fn_taint_map: HashMap<Name, TaintedType>,
     ) -> Self {
         let named_struct_defs = Rc::new(RefCell::new(NamedStructDefs::new(module)));
+        let worklist = Rc::new(RefCell::new(std::iter::once(start_fn).collect()));
         Self {
             module,
             config,
             fn_taint_states: std::iter::once((
                 start_fn.into(),
-                FunctionTaintState::from_taint_map(start_fn, start_fn_taint_map, module, named_struct_defs.clone()),
+                FunctionTaintState::from_taint_map(
+                    start_fn,
+                    start_fn_taint_map,
+                    module,
+                    named_struct_defs.clone(),
+                    worklist.clone()
+                ),
             ))
             .collect(),
             fn_summaries: HashMap::new(),
             named_struct_defs,
             callers: HashMap::new(),
-            worklist: Rc::new(RefCell::new(std::iter::once(start_fn).collect())),
+            worklist,
             cur_fn: start_fn,
         }
     }
@@ -1015,6 +1047,7 @@ impl<'m> ModuleTaintState<'m> {
                 Some(fn_name) => fn_name,
                 None => break,
             };
+            debug!("Popped {:?} from worklist", fn_name);
             let changed = match self.module.get_func_by_name(fn_name) {
                 Some(func) => {
                     // internal function (defined in the current module):
@@ -1085,11 +1118,13 @@ impl<'m> ModuleTaintState<'m> {
     ///
     /// Returns `true` if a change was made to the function's taint state, or `false` if not.
     fn process_function(&mut self, f: &'m Function) -> Result<bool, String> {
+        debug!("Processing function {:?}", &f.name);
         self.cur_fn = &f.name;
 
         // get the taint state for the current function, creating a new one if necessary
         let module = self.module; // this is for the borrow checker - allows us to access `module` without needing to borrow `self`
         let named_struct_defs: &Rc<_> = &self.named_struct_defs; // similarly for the borrow checker - see note on above line
+        let worklist: &Rc<_> = &self.worklist; // similarly for the borrow checker - see note on above line
         let cur_fn = self
             .fn_taint_states
             .entry(f.name.clone())
@@ -1103,7 +1138,8 @@ impl<'m> ModuleTaintState<'m> {
                         })
                         .collect(),
                     module,
-                    named_struct_defs.clone(),
+                    Rc::clone(named_struct_defs),
+                    Rc::clone(worklist),
                 )
             });
 

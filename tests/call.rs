@@ -3,6 +3,11 @@ use llvm_ir_taint::*;
 use std::collections::HashMap;
 use std::path::Path;
 
+fn init_logging() {
+    // capture log messages with test harness
+    let _ = env_logger::builder().is_test(true).try_init();
+}
+
 fn get_module() -> Module {
     let modname = "../haybale/tests/bcfiles/call.bc";
     Module::from_bc_path(&Path::new(modname))
@@ -11,6 +16,7 @@ fn get_module() -> Module {
 
 #[test]
 fn simple_call() {
+    init_logging();
     let module = get_module();
     let config = Config::default();
 
@@ -44,6 +50,7 @@ fn simple_call() {
 
 #[test]
 fn nested_call() {
+    init_logging();
     let module = get_module();
     let config = Config::default();
 
@@ -77,6 +84,7 @@ fn nested_call() {
 
 #[test]
 fn call_in_loop() {
+    init_logging();
     let module = get_module();
     let config = Config::default();
 
@@ -116,6 +124,7 @@ fn call_in_loop() {
 
 #[test]
 fn recursive_call() {
+    init_logging();
     let module = get_module();
     let config = Config::default();
     let funcname = "recursive_simple";
@@ -138,6 +147,7 @@ fn recursive_call() {
 
 #[test]
 fn mutually_recursive_call() {
+    init_logging();
     let module = get_module();
     let config = Config::default();
     let funcname = "mutually_recursive_a";

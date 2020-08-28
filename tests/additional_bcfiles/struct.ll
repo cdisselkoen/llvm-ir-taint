@@ -3,17 +3,17 @@ source_filename = "struct.c"
 target datalayout = "e-m:o-i64:64-f80:128-n8:16:32:64-S128"
 target triple = "x86_64-apple-macosx10.15.0"
 
-%struct.TwoInts = type { i32, i32 }
+%struct.ThreeInts = type { i32, i32, i32 }
 
 ; Function Attrs: noinline nounwind optnone ssp uwtable
-define void @called(%struct.TwoInts*) #0 {
-  %2 = alloca %struct.TwoInts*, align 8
-  store %struct.TwoInts* %0, %struct.TwoInts** %2, align 8
-  %3 = load %struct.TwoInts*, %struct.TwoInts** %2, align 8
-  %4 = getelementptr inbounds %struct.TwoInts, %struct.TwoInts* %3, i32 0, i32 0
+define void @called(%struct.ThreeInts*) #0 {
+  %2 = alloca %struct.ThreeInts*, align 8
+  store %struct.ThreeInts* %0, %struct.ThreeInts** %2, align 8
+  %3 = load %struct.ThreeInts*, %struct.ThreeInts** %2, align 8
+  %4 = getelementptr inbounds %struct.ThreeInts, %struct.ThreeInts* %3, i32 0, i32 0
   %5 = load i32, i32* %4, align 4
-  %6 = load %struct.TwoInts*, %struct.TwoInts** %2, align 8
-  %7 = getelementptr inbounds %struct.TwoInts, %struct.TwoInts* %6, i32 0, i32 1
+  %6 = load %struct.ThreeInts*, %struct.ThreeInts** %2, align 8
+  %7 = getelementptr inbounds %struct.ThreeInts, %struct.ThreeInts* %6, i32 0, i32 2
   store i32 %5, i32* %7, align 4
   ret void
 }
@@ -21,15 +21,15 @@ define void @called(%struct.TwoInts*) #0 {
 ; Function Attrs: noinline nounwind optnone ssp uwtable
 define i32 @caller(i32) #0 {
   %2 = alloca i32, align 4
-  %3 = alloca %struct.TwoInts, align 4
+  %3 = alloca %struct.ThreeInts, align 4
   store i32 %0, i32* %2, align 4
-  %4 = bitcast %struct.TwoInts* %3 to i8*
-  call void @llvm.memset.p0i8.i64(i8* align 4 %4, i8 0, i64 8, i1 false)
+  %4 = bitcast %struct.ThreeInts* %3 to i8*
+  call void @llvm.memset.p0i8.i64(i8* align 4 %4, i8 0, i64 12, i1 false)
   %5 = load i32, i32* %2, align 4
-  %6 = getelementptr inbounds %struct.TwoInts, %struct.TwoInts* %3, i32 0, i32 0
+  %6 = getelementptr inbounds %struct.ThreeInts, %struct.ThreeInts* %3, i32 0, i32 0
   store i32 %5, i32* %6, align 4
-  call void @called(%struct.TwoInts* %3)
-  %7 = getelementptr inbounds %struct.TwoInts, %struct.TwoInts* %3, i32 0, i32 1
+  call void @called(%struct.ThreeInts* %3)
+  %7 = getelementptr inbounds %struct.ThreeInts, %struct.ThreeInts* %3, i32 0, i32 2
   %8 = load i32, i32* %7, align 4
   ret i32 %8
 }

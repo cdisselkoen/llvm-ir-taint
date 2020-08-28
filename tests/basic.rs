@@ -3,6 +3,11 @@ use llvm_ir_taint::*;
 use std::collections::HashMap;
 use std::path::Path;
 
+fn init_logging() {
+    // capture log messages with test harness
+    let _ = env_logger::builder().is_test(true).try_init();
+}
+
 fn get_basic_module() -> Module {
     let modname = "../haybale/tests/bcfiles/basic.bc";
     Module::from_bc_path(&Path::new(modname))
@@ -17,6 +22,7 @@ fn get_memory_module() -> Module {
 
 #[test]
 fn basic_operation() {
+    init_logging();
     let funcname = "two_args";
     let module = get_basic_module();
     let config = Config::default();
@@ -128,6 +134,7 @@ fn basic_operation() {
 
 #[test]
 fn binops() {
+    init_logging();
     let funcname = "binops";
     let module = get_basic_module();
     let config = Config::default();
@@ -383,6 +390,7 @@ fn binops() {
 
 #[test]
 fn phi() {
+    init_logging();
     let funcname = "conditional_nozero";
     let module = get_basic_module();
     let config = Config::default();
@@ -450,6 +458,7 @@ fn phi() {
 
 #[test]
 fn load_and_store() {
+    init_logging();
     let funcname = "load_and_store";
     let module = get_memory_module();
     let config = Config::default();
@@ -515,6 +524,7 @@ fn load_and_store() {
 
 #[test]
 fn alloca() {
+    init_logging();
     let funcname = "local_ptr";
     let module = get_memory_module();
     let config = Config::default();
@@ -554,6 +564,7 @@ fn alloca() {
 
 #[test]
 fn overwrite() {
+    init_logging();
     let funcname = "overwrite";
     let module = get_memory_module();
     let config = Config::default();
@@ -595,6 +606,7 @@ fn overwrite() {
 
 #[test]
 fn load_and_store_mult() {
+    init_logging();
     let funcname = "load_and_store_mult";
     let module = get_memory_module();
     let config = Config::default();
@@ -636,6 +648,7 @@ fn load_and_store_mult() {
 
 #[test]
 fn array() {
+    init_logging();
     let funcname = "load_and_store_mult";
     let module = get_memory_module();
     let config = Config::default();

@@ -2,6 +2,11 @@ use llvm_ir::{Module, Name};
 use llvm_ir_taint::*;
 use std::path::Path;
 
+fn init_logging() {
+    // capture log messages with test harness
+    let _ = env_logger::builder().is_test(true).try_init();
+}
+
 fn get_module() -> Module {
     let modname = "../haybale/tests/bcfiles/loop.bc";
     Module::from_bc_path(&Path::new(modname))
@@ -10,6 +15,7 @@ fn get_module() -> Module {
 
 #[test]
 fn while_loop() {
+    init_logging();
     let funcname = "while_loop";
     let module = get_module();
     let config = Config::default();
@@ -32,6 +38,7 @@ fn while_loop() {
 
 #[test]
 fn for_loop() {
+    init_logging();
     let funcname = "for_loop";
     let module = get_module();
     let config = Config::default();
@@ -54,6 +61,7 @@ fn for_loop() {
 
 #[test]
 fn loop_over_array() {
+    init_logging();
     let funcname = "loop_over_array";
     let module = get_module();
     let config = Config::default();

@@ -3,6 +3,11 @@ use llvm_ir_taint::*;
 use std::collections::HashMap;
 use std::path::Path;
 
+fn init_logging() {
+    // capture log messages with test harness
+    let _ = env_logger::builder().is_test(true).try_init();
+}
+
 fn get_module() -> Module {
     let modname = "../haybale/tests/bcfiles/struct.bc";
     Module::from_bc_path(&Path::new(modname))
@@ -24,6 +29,7 @@ fn get_addl_module() -> Module {
 
 #[test]
 fn one_struct_element() {
+    init_logging();
     let funcname = "one_int";
     let module = get_module();
     let config = Config::default();
@@ -46,6 +52,7 @@ fn one_struct_element() {
 
 #[test]
 fn two_struct_elements() {
+    init_logging();
     let funcname = "two_ints_second";
     let module = get_module();
     let config = Config::default();
@@ -81,6 +88,7 @@ fn two_struct_elements() {
 
 #[test]
 fn zero_initialize() {
+    init_logging();
     let funcname = "zero_initialize";
     let module = get_module();
     let config = Config::default();
@@ -119,6 +127,7 @@ fn zero_initialize() {
 
 #[test]
 fn nested_struct() {
+    init_logging();
     let module = get_module();
     let config = Config::default();
 
@@ -163,6 +172,7 @@ fn nested_struct() {
 
 #[test]
 fn with_array() {
+    init_logging();
     let funcname = "with_array";
     let module = get_module();
     let config = Config::default();
@@ -200,6 +210,7 @@ fn with_array() {
 
 #[test]
 fn structptr() {
+    init_logging();
     let module = get_module();
     let config = Config::default();
 
@@ -234,6 +245,7 @@ fn structptr() {
 
 #[test]
 fn changeptr() {
+    init_logging();
     let funcname = "changeptr";
     let module = get_module();
     let config = Config::default();
@@ -265,6 +277,7 @@ fn changeptr() {
 
 #[test]
 fn with_ptr() {
+    init_logging();
     let funcname = "with_ptr";
     let module = get_O3_module();
     let mut config = Config::default();
@@ -299,14 +312,15 @@ fn with_ptr() {
 
 #[test]
 fn addl_structtest() {
+    init_logging();
     let funcname = "caller";
     let module = get_addl_module();
     let config = Config::default();
 
     // For this function, given tainted input, we check that the final inferred
-    // TaintedType for struct.TwoInts is (untainted, tainted)
-    // and that the final type for %7 in caller() is tainted
-    // Importantly, this requires that the change to struct.TwoInts' type made
+    // TaintedType for struct.ThreeInts is (tainted, untainted, tainted)
+    // and that the final type for %8 in caller() is tainted
+    // Importantly, this requires that the change to struct.ThreeInts' type made
     // in called() actually puts caller() back on the worklist
     let mtr = do_taint_analysis(
         &module,
@@ -316,14 +330,15 @@ fn addl_structtest() {
         HashMap::new()
     );
     assert_eq!(
-        mtr.get_named_struct_type("struct.TwoInts"),
+        mtr.get_named_struct_type("struct.ThreeInts"),
         &TaintedType::struct_of(vec![
+            TaintedType::TaintedValue,
             TaintedType::UntaintedValue,
             TaintedType::TaintedValue,
         ]),
     );
     assert_eq!(
-        mtr.get_function_taint_map("caller").get(&Name::Number(7)),
+        mtr.get_function_taint_map("caller").get(&Name::Number(8)),
         Some(&TaintedType::TaintedValue),
     );
 }

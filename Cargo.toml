@@ -9,3 +9,7 @@ edition = "2018"
 [dependencies]
 either = "1.5.3"
 llvm-ir = { version = "0.7.0", features = ["llvm-10"] }
+log = "0.4.11"
+
+[dev-dependencies]
+env_logger = "0.7.1"
