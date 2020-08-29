@@ -1,5 +1,6 @@
 use llvm_ir::{Module, Name};
 use llvm_ir_taint::*;
+use llvm_ir_taint::config::ExternalFunctionHandling;
 use std::collections::HashMap;
 use std::path::Path;
 
