@@ -1,3 +1,4 @@
+use crate::function_taint_state::FunctionTaintState;
 use crate::tainted_type::TaintedType;
 use llvm_ir::Name;
 use std::cell::{Ref, RefCell};
@@ -127,12 +128,7 @@ impl Pointee {
     ///
     /// Returns `true` if the contents' `TaintedType` changed, accounting for the
     /// join operation.
-    //
-    // Note that currently we don't add named struct users or global users to
-    // the worklist in this function directly. That's done in
-    // `FunctionTaintState::update_pointee_taintedtype()`, which we assume all
-    // callers of `update()` go through. (This is true as of this writing.)
-    pub(crate) fn update(&mut self, new_pointee_ty: TaintedType) -> Result<bool, String> {
+    pub(crate) fn update(&mut self, new_pointee_ty: TaintedType, fts: &FunctionTaintState) -> Result<bool, String> {
         let mut pointee_ty = self.ty.borrow_mut();
         let joined_pointee_ty = pointee_ty.join(&new_pointee_ty)?;
         if &*pointee_ty == &joined_pointee_ty {
@@ -148,6 +144,22 @@ impl Pointee {
             // pointer, and the element pointer) to have type
             // pointer-to-tainted.
             *pointee_ty = joined_pointee_ty;
+            // If we just updated an element of a named struct, add all the
+            // users of that named struct to the worklist
+            if let Some(struct_name) = &self.named_struct {
+                let mut worklist = fts.worklist.borrow_mut();
+                for user in fts.named_struct_defs.borrow().get_named_struct_users(struct_name) {
+                    worklist.add(user);
+                }
+            }
+            // If we just updated all or part of the contents of a global, add
+            // all the users of that global to the worklist
+            if let Some(global_name) = &self.global {
+                let mut worklist = fts.worklist.borrow_mut();
+                for user in fts.globals.borrow().get_global_users(global_name) {
+                    worklist.add(user);
+                }
+            }
             Ok(true)
         }
     }

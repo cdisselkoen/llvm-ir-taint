@@ -19,11 +19,11 @@ pub struct FunctionTaintState<'m> {
     /// Reference to the llvm-ir `Module`
     module: &'m Module,
     /// Reference to the module's named struct types
-    named_struct_defs: Rc<RefCell<NamedStructs<'m>>>,
+    pub(crate) named_struct_defs: Rc<RefCell<NamedStructs<'m>>>,
     /// Reference to the module's globals
-    globals: Rc<RefCell<Globals<'m>>>,
+    pub(crate) globals: Rc<RefCell<Globals<'m>>>,
     /// Reference to the module's worklist
-    worklist: Rc<RefCell<Worklist<'m>>>,
+    pub(crate) worklist: Rc<RefCell<Worklist<'m>>>,
 }
 
 impl<'m> FunctionTaintState<'m> {
@@ -227,22 +227,6 @@ impl<'m> FunctionTaintState<'m> {
         pointee: &mut Pointee,
         new_pointee: TaintedType,
     ) -> Result<bool, String> {
-        if pointee.update(new_pointee)? {
-            if let Some(struct_name) = pointee.get_struct_name() {
-                let mut worklist = self.worklist.borrow_mut();
-                for user in self.named_struct_defs.borrow().get_named_struct_users(struct_name) {
-                    worklist.add(user);
-                }
-            }
-            if let Some(global_name) = pointee.get_global_name() {
-                let mut worklist = self.worklist.borrow_mut();
-                for user in self.globals.borrow().get_global_users(global_name) {
-                    worklist.add(user);
-                }
-            }
-            Ok(true)
-        } else {
-            Ok(false)
-        }
+        pointee.update(new_pointee, &self)
     }
 }
