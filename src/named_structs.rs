@@ -186,8 +186,8 @@ impl<'m> NamedStructs<'m> {
                                 );
                                 let pointee = elements.get(index as usize).ok_or_else(|| {
                                     format!(
-                                        "get_element_ptr: index out of range: index {:?} in struct {:?} with {} elements",
-                                        index, pointee, elements.len()
+                                        "get_element_ptr: index out of range: index {:?} in struct with type {:?} (which has {} elements)",
+                                        index, pointee_ty, elements.len()
                                     )
                                 })?;
                                 let mut pointee = pointee.clone(); // release the borrow of `self` due to `elements`
