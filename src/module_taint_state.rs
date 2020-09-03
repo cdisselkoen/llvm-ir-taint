@@ -605,9 +605,38 @@ impl<'m> ModuleTaintState<'m> {
                             Constant::GlobalReference{ name, .. } => {
                                 unimplemented!("Call of a function with a numbered name: {:?}", name)
                             },
-                            _ => unimplemented!("Call of a function pointer"),
+                            _ => unimplemented!("Call of a constant function pointer"),
                         },
-                        Either::Right(_) => unimplemented!("Call of a function pointer"),
+                        Either::Right(_) => {
+                            use config::ExternalFunctionHandling;
+                            match self.config.fn_pointers {
+                                ExternalFunctionHandling::IgnoreAndReturnUntainted => {
+                                    match &call.dest {
+                                        None => Ok(false),
+                                        Some(dest) => {
+                                            let untainted_ret_ty = TaintedType::from_llvm_type(&self.module.type_of(call));
+                                            self.get_cur_fn().update_var_taintedtype(dest.clone(), untainted_ret_ty)
+                                        },
+                                    }
+                                },
+                                ExternalFunctionHandling::IgnoreAndReturnTainted => {
+                                    match &call.dest {
+                                        None => Ok(false),
+                                        Some(dest) => {
+                                            let untainted_ret_ty = TaintedType::from_llvm_type(&self.module.type_of(call));
+                                            let tainted_ret_ty = untainted_ret_ty.to_tainted();
+                                            self.get_cur_fn().update_var_taintedtype(dest.clone(), tainted_ret_ty)
+                                        },
+                                    }
+                                },
+                                ExternalFunctionHandling::PropagateTaint => {
+                                    unimplemented!("ExternalFunctionHandling::PropagateTaint")
+                                },
+                                ExternalFunctionHandling::Panic => {
+                                    panic!("Call of a function pointer")
+                                },
+                            }
+                        },
                         Either::Left(_) => unimplemented!("inline assembly"),
                     }
                 },
