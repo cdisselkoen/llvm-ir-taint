@@ -21,7 +21,7 @@ fn simple_call() {
     let config = Config::default();
 
     // test basic taint tracking through a called function
-    let mtr = do_taint_analysis(
+    let mtr = do_taint_analysis_on_function(
         &module,
         &config,
         "simple_caller",
@@ -55,7 +55,7 @@ fn nested_call() {
     let config = Config::default();
 
     // test basic taint tracking through two calls
-    let mtr = do_taint_analysis(
+    let mtr = do_taint_analysis_on_function(
         &module,
         &config,
         "nested_caller",
@@ -91,7 +91,7 @@ fn call_in_loop() {
     // untainted function input, but manually mark %13 as tainted.
     // on the first pass, the call appears to have untainted arguments.
     // but on the second pass, it becomes clear that the call has tainted arguments.
-    let mtr = do_taint_analysis(
+    let mtr = do_taint_analysis_on_function(
         &module,
         &config,
         "caller_with_loop",
@@ -131,7 +131,7 @@ fn recursive_call() {
 
     // untainted function input, but we mark %2 tainted, so the function input
     // should be marked tainted at fixpoint
-    let mtr = do_taint_analysis(
+    let mtr = do_taint_analysis_on_function(
         &module,
         &config,
         funcname,
@@ -154,7 +154,7 @@ fn mutually_recursive_call() {
 
     // untainted function input, but we mark %4 tainted, so after recursion,
     // the function input should eventually be marked tainted
-    let mtr = do_taint_analysis(
+    let mtr = do_taint_analysis_on_function(
         &module,
         &config,
         funcname,

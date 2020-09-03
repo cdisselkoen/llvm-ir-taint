@@ -7,6 +7,7 @@ use crate::named_structs::{Index, NamedStructs};
 use crate::tainted_type::TaintedType;
 use crate::worklist::Worklist;
 use either::Either;
+use itertools::Itertools;
 use llvm_ir::instruction::{groups, BinaryOp, HasResult, UnaryOp};
 use llvm_ir::*;
 use log::debug;
@@ -58,13 +59,34 @@ impl<'m> ModuleTaintState<'m> {
     /// initial `TaintedType`s of those variables. Must include types for the
     /// function parameters; may optionally include types for other variables in
     /// the function.
-    pub fn do_analysis(
+    pub fn do_analysis_single_function(
         module: &'m Module,
         config: &'m Config,
         start_fn: &'m str,
         start_fn_taint_map: HashMap<Name, TaintedType>,
     ) -> Self {
-        let mut mts = Self::new(module, config, start_fn, start_fn_taint_map);
+        let fn_taint_maps = std::iter::once((start_fn.into(), start_fn_taint_map)).collect();
+        let mut mts = Self::new(module, config, std::iter::once(start_fn), fn_taint_maps);
+        mts.compute();
+        mts
+    }
+
+    /// Compute the tainted state of all variables using our fixpoint algorithm,
+    /// and return the resulting `ModuleTaintState`.
+    ///
+    /// `start_fns`: name of the functions to start the analysis in
+    ///
+    /// `fn_taint_maps`: Map from LLVM function name to a map from variable name
+    /// to the initial `TaintedType` of that variable. Any variable not included
+    /// in one of these maps will simply be inferred normally from the other
+    /// variables.
+    pub fn do_analysis_multiple_functions(
+        module: &'m Module,
+        config: &'m Config,
+        start_fns: impl IntoIterator<Item = &'m str>,
+        fn_taint_maps: HashMap<&'m str, HashMap<Name, TaintedType>>,
+    ) -> Self {
+        let mut mts = Self::new(module, config, start_fns, fn_taint_maps);
         mts.compute();
         mts
     }
@@ -72,33 +94,36 @@ impl<'m> ModuleTaintState<'m> {
     fn new(
         module: &'m Module,
         config: &'m Config,
-        start_fn: &'m str,
-        start_fn_taint_map: HashMap<Name, TaintedType>,
+        start_fns: impl IntoIterator<Item = &'m str>,
+        fn_taint_maps: HashMap<&'m str, HashMap<Name, TaintedType>>,
     ) -> Self {
         let named_struct_defs = Rc::new(RefCell::new(NamedStructs::new(module)));
         let globals = Rc::new(RefCell::new(Globals::new()));
-        let worklist = Rc::new(RefCell::new(std::iter::once(start_fn).collect()));
-        Self {
-            module,
-            config,
-            fn_taint_states: std::iter::once((
-                start_fn.into(),
-                FunctionTaintState::from_taint_map(
-                    start_fn,
-                    start_fn_taint_map,
+        let worklist = Rc::new(RefCell::new(start_fns.into_iter().collect()));
+        let fn_taint_states = fn_taint_maps
+            .into_iter()
+            .map(|(s, taintmap)| {
+                let fts = FunctionTaintState::from_taint_map(
+                    &s,
+                    taintmap,
                     module,
                     named_struct_defs.clone(),
                     globals.clone(),
-                    worklist.clone()
-                ),
-            ))
-            .collect(),
+                    worklist.clone(),
+                );
+                (s.into(), fts)
+            })
+            .collect();
+        Self {
+            module,
+            config,
+            fn_taint_states,
             fn_summaries: HashMap::new(),
             named_struct_defs,
             globals,
             callers: HashMap::new(),
             worklist,
-            cur_fn: start_fn,
+            cur_fn: "", // we shouldn't use `cur_fn` until it's set to the first one we pop off the worklist
         }
     }
 
@@ -264,8 +289,7 @@ impl<'m> ModuleTaintState<'m> {
             Entry::Occupied(oentry) => oentry.into_mut(),
         };
         // update the function parameter types from the current summary
-        debug_assert_eq!(f.parameters.len(), summary.get_params().count());
-        for (param, param_ty) in f.parameters.iter().zip(summary.get_params()) {
+        for (param, param_ty) in f.parameters.iter().zip_eq(summary.get_params()) {
             let _: bool = cur_fn.update_var_taintedtype(param.name.clone(), param_ty.clone()).map_err(|e| {
                 format!("Encountered this error:\n  {}\nwhile processing the parameters for this function:\n  {:?}", e, &f.name)
             })?;

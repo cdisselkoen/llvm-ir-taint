@@ -23,7 +23,7 @@ fn globals() {
 
     // Tainting the input should cause the output to be tainted, after being
     // written into the global and then read back out
-    let mtr = do_taint_analysis(
+    let mtr = do_taint_analysis_on_function(
         &module,
         &config,
         funcname,

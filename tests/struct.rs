@@ -37,7 +37,7 @@ fn one_struct_element() {
 
     // Tainting the input should cause the output to be tainted, after being
     // written into the struct field and then read back out
-    let mtr = do_taint_analysis(
+    let mtr = do_taint_analysis_on_function(
         &module,
         &config,
         funcname,
@@ -62,7 +62,7 @@ fn two_struct_elements() {
     // above test.
     // This time we check the type of %3 to ensure that the first field wasn't
     // tainted, only the second
-    let mtr = do_taint_analysis(
+    let mtr = do_taint_analysis_on_function(
         &module,
         &config,
         funcname,
@@ -96,7 +96,7 @@ fn zero_initialize() {
 
     // With tainted input, we should have tainted output, but none of the struct
     // fields should be tainted, and neither should %21
-    let mtr = do_taint_analysis(
+    let mtr = do_taint_analysis_on_function(
         &module,
         &config,
         funcname,
@@ -133,7 +133,7 @@ fn nested_struct() {
     let config = Config::default();
 
     // For nested_first, we just check that tainted input results in tainted output
-    let mtr = do_taint_analysis(
+    let mtr = do_taint_analysis_on_function(
         &module,
         &config,
         "nested_first",
@@ -149,7 +149,7 @@ fn nested_struct() {
     // For nested_all, we let the first argument be untainted and the second tainted.
     // We expect that n.mm.el1, i.e. %26 and %38, remains untainted, while the
     // final output is tainted.
-    let mtr = do_taint_analysis(
+    let mtr = do_taint_analysis_on_function(
         &module,
         &config,
         "nested_all",
@@ -179,7 +179,7 @@ fn with_array() {
     let config = Config::default();
 
     // We check the inferred TaintedType for the struct, %3, given tainted input
-    let mtr = do_taint_analysis(
+    let mtr = do_taint_analysis_on_function(
         &module,
         &config,
         funcname,
@@ -217,7 +217,7 @@ fn structptr() {
 
     // For these two functions, we just check that tainted input causes tainted output
 
-    let mtr = do_taint_analysis(
+    let mtr = do_taint_analysis_on_function(
         &module,
         &config,
         "structptr",
@@ -230,7 +230,7 @@ fn structptr() {
         Some(&TaintedType::TaintedValue)
     );
 
-    let mtr = do_taint_analysis(
+    let mtr = do_taint_analysis_on_function(
         &module,
         &config,
         "structelptr",
@@ -254,7 +254,7 @@ fn changeptr() {
     // For this function, given tainted input, we check that the final inferred
     // TaintedType for ti is a pointer to a ThreeInts with the second element
     // tainted
-    let mtr = do_taint_analysis(
+    let mtr = do_taint_analysis_on_function(
         &module,
         &config,
         funcname,
@@ -288,7 +288,7 @@ fn with_ptr() {
     // TaintedType for struct TwoInts is (untainted, tainted)
     // and that the final inferred TaintedType for struct WithPointer has the
     // appropriate structure
-    let mtr = do_taint_analysis(
+    let mtr = do_taint_analysis_on_function(
         &module,
         &config,
         funcname,
@@ -323,7 +323,7 @@ fn addl_structtest() {
     // and that the final type for %8 in caller() is tainted
     // Importantly, this requires that the change to struct.ThreeInts' type made
     // in called() actually puts caller() back on the worklist
-    let mtr = do_taint_analysis(
+    let mtr = do_taint_analysis_on_function(
         &module,
         &config,
         funcname,

@@ -8,6 +8,7 @@ edition = "2018"
 
 [dependencies]
 either = "1.5.3"
+itertools = "0.9"
 llvm-ir = { version = "0.7.1", features = ["llvm-10"] }
 log = "0.4.11"
 

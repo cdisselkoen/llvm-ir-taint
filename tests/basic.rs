@@ -28,7 +28,7 @@ fn basic_operation() {
     let config = Config::default();
 
     // with both arguments tainted
-    let mtr = do_taint_analysis(
+    let mtr = do_taint_analysis_on_function(
         &module,
         &config,
         funcname,
@@ -54,7 +54,7 @@ fn basic_operation() {
     );
 
     // with neither argument tainted
-    let mtr = do_taint_analysis(
+    let mtr = do_taint_analysis_on_function(
         &module,
         &config,
         funcname,
@@ -80,7 +80,7 @@ fn basic_operation() {
     );
 
     // with just the first argument tainted
-    let mtr = do_taint_analysis(
+    let mtr = do_taint_analysis_on_function(
         &module,
         &config,
         funcname,
@@ -106,7 +106,7 @@ fn basic_operation() {
     );
 
     // with just the second argument tainted
-    let mtr = do_taint_analysis(
+    let mtr = do_taint_analysis_on_function(
         &module,
         &config,
         funcname,
@@ -140,7 +140,7 @@ fn binops() {
     let config = Config::default();
 
     // with both arguments tainted
-    let mtr = do_taint_analysis(
+    let mtr = do_taint_analysis_on_function(
         &module,
         &config,
         funcname,
@@ -202,7 +202,7 @@ fn binops() {
     );
 
     // with neither argument tainted
-    let mtr = do_taint_analysis(
+    let mtr = do_taint_analysis_on_function(
         &module,
         &config,
         funcname,
@@ -264,7 +264,7 @@ fn binops() {
     );
 
     // with just the second argument tainted
-    let mtr = do_taint_analysis(
+    let mtr = do_taint_analysis_on_function(
         &module,
         &config,
         funcname,
@@ -326,7 +326,7 @@ fn binops() {
     );
 
     // with %8 manually tainted, and nothing else
-    let mtr = do_taint_analysis(
+    let mtr = do_taint_analysis_on_function(
         &module,
         &config,
         funcname,
@@ -396,7 +396,7 @@ fn phi() {
     let config = Config::default();
 
     // with both arguments untainted
-    let mtr = do_taint_analysis(
+    let mtr = do_taint_analysis_on_function(
         &module,
         &config,
         funcname,
@@ -426,7 +426,7 @@ fn phi() {
     );
 
     // with second argument tainted
-    let mtr = do_taint_analysis(
+    let mtr = do_taint_analysis_on_function(
         &module,
         &config,
         funcname,
@@ -464,7 +464,7 @@ fn load_and_store() {
     let config = Config::default();
 
     // with both arguments untainted
-    let mtr = do_taint_analysis(
+    let mtr = do_taint_analysis_on_function(
         &module,
         &config,
         funcname,
@@ -493,7 +493,7 @@ fn load_and_store() {
     );
 
     // with value tainted: make sure that we correctly load a tainted value
-    let mtr = do_taint_analysis(
+    let mtr = do_taint_analysis_on_function(
         &module,
         &config,
         funcname,
@@ -530,7 +530,7 @@ fn alloca() {
     let config = Config::default();
 
     // with the argument untainted
-    let mtr = do_taint_analysis(
+    let mtr = do_taint_analysis_on_function(
         &module,
         &config,
         funcname,
@@ -544,7 +544,7 @@ fn alloca() {
     ); // load untainted value from the alloca'd space
 
     // with the argument tainted
-    let mtr = do_taint_analysis(
+    let mtr = do_taint_analysis_on_function(
         &module,
         &config,
         funcname,
@@ -570,7 +570,7 @@ fn overwrite() {
     let config = Config::default();
 
     // with both arguments untainted
-    let mtr = do_taint_analysis(
+    let mtr = do_taint_analysis_on_function(
         &module,
         &config,
         funcname,
@@ -587,7 +587,7 @@ fn overwrite() {
     );
 
     // with the second argument tainted
-    let mtr = do_taint_analysis(
+    let mtr = do_taint_analysis_on_function(
         &module,
         &config,
         funcname,
@@ -612,7 +612,7 @@ fn load_and_store_mult() {
     let config = Config::default();
 
     // with both arguments untainted
-    let mtr = do_taint_analysis(
+    let mtr = do_taint_analysis_on_function(
         &module,
         &config,
         funcname,
@@ -629,7 +629,7 @@ fn load_and_store_mult() {
     );
 
     // with the second argument tainted
-    let mtr = do_taint_analysis(
+    let mtr = do_taint_analysis_on_function(
         &module,
         &config,
         funcname,
@@ -654,7 +654,7 @@ fn array() {
     let config = Config::default();
 
     // with both arguments untainted
-    let mtr = do_taint_analysis(
+    let mtr = do_taint_analysis_on_function(
         &module,
         &config,
         funcname,
@@ -671,7 +671,7 @@ fn array() {
     );
 
     // with the second argument tainted
-    let mtr = do_taint_analysis(
+    let mtr = do_taint_analysis_on_function(
         &module,
         &config,
         funcname,
@@ -690,7 +690,7 @@ fn array() {
     // with %5 tainted but %3 not. In this case we want to ensure that the
     // (tainted) store to %0 doesn't affect the load from %4, which should
     // remain untainted.
-    let mtr = do_taint_analysis(
+    let mtr = do_taint_analysis_on_function(
         &module,
         &config,
         funcname,
