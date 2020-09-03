@@ -31,7 +31,7 @@ pub(crate) struct ModuleTaintState<'m> {
     fn_summaries: HashMap<String, FunctionSummary<'m>>,
 
     /// Named structs used in the module, and their definitions (taint statuses)
-    named_struct_defs: Rc<RefCell<NamedStructs<'m>>>,
+    named_structs: Rc<RefCell<NamedStructs<'m>>>,
 
     /// Globals used in the module, and their definitions (taint statuses)
     globals: Rc<RefCell<Globals<'m>>>,
@@ -97,7 +97,7 @@ impl<'m> ModuleTaintState<'m> {
         start_fns: impl IntoIterator<Item = &'m str>,
         fn_taint_maps: HashMap<&'m str, HashMap<Name, TaintedType>>,
     ) -> Self {
-        let named_struct_defs = Rc::new(RefCell::new(NamedStructs::new(module)));
+        let named_structs = Rc::new(RefCell::new(NamedStructs::new(module)));
         let globals = Rc::new(RefCell::new(Globals::new()));
         let worklist = Rc::new(RefCell::new(start_fns.into_iter().collect()));
         let fn_taint_states = fn_taint_maps
@@ -107,9 +107,9 @@ impl<'m> ModuleTaintState<'m> {
                     &s,
                     taintmap,
                     module,
-                    named_struct_defs.clone(),
-                    globals.clone(),
-                    worklist.clone(),
+                    Rc::clone(&named_structs),
+                    Rc::clone(&globals),
+                    Rc::clone(&worklist),
                 );
                 (s.into(), fts)
             })
@@ -119,7 +119,7 @@ impl<'m> ModuleTaintState<'m> {
             config,
             fn_taint_states,
             fn_summaries: HashMap::new(),
-            named_struct_defs,
+            named_structs,
             globals,
             callers: HashMap::new(),
             worklist,
@@ -131,7 +131,7 @@ impl<'m> ModuleTaintState<'m> {
         ModuleTaintResult {
             fn_taint_states: self.fn_taint_states,
             named_struct_types: self
-                .named_struct_defs
+                .named_structs
                 .borrow()
                 .all_named_struct_types()
                 .map(|(name, ty)| (name.clone(), ty.clone()))
@@ -196,9 +196,9 @@ impl<'m> ModuleTaintState<'m> {
                             // summary
                             let summary = self.fn_summaries.get_mut(fn_name).unwrap_or_else(|| panic!("Internal invariant violated: External function {:?} on the worklist has no summary", fn_name));
                             // we effectively inline self.is_type_tainted(), in order to prove to the borrow checker that `summary` borrows a different part of `self` than we need for `is_type_tainted()`
-                            let mut named_struct_defs = self.named_struct_defs.borrow_mut();
+                            let mut named_structs = self.named_structs.borrow_mut();
                             let cur_fn = &self.cur_fn;
-                            if summary.get_params().any(|p| named_struct_defs.is_type_tainted(p, cur_fn)) {
+                            if summary.get_params().any(|p| named_structs.is_type_tainted(p, cur_fn)) {
                                 summary.taint_ret()
                             } else {
                                 // no need to do anything, just like the IgnoreAndReturnUntainted case
@@ -237,17 +237,17 @@ impl<'m> ModuleTaintState<'m> {
     /// Creates an untainted `TaintedType` for this named struct if no type
     /// previously existed for it.
     pub fn get_named_struct_type(&mut self, struct_name: impl Into<String>) -> TaintedType {
-        self.named_struct_defs.borrow_mut().get_named_struct_type(struct_name.into(), &self.cur_fn).clone()
+        self.named_structs.borrow_mut().get_named_struct_type(struct_name.into(), &self.cur_fn).clone()
     }
 
     /// Is this type tainted (or, for structs, is any element of the struct tainted)
     pub fn is_type_tainted(&mut self, ty: &TaintedType) -> bool {
-        self.named_struct_defs.borrow_mut().is_type_tainted(ty, &self.cur_fn)
+        self.named_structs.borrow_mut().is_type_tainted(ty, &self.cur_fn)
     }
 
     /// Convert this (tainted or untainted) type to the equivalent tainted type.
     pub fn to_tainted(&self, ty: &TaintedType) -> TaintedType {
-        ty.to_tainted(self.named_struct_defs.clone(), self.cur_fn)
+        ty.to_tainted(Rc::clone(&self.named_structs), self.cur_fn)
     }
 
     /// Process the given `Function`.
@@ -259,7 +259,7 @@ impl<'m> ModuleTaintState<'m> {
 
         // get the taint state for the current function, creating a new one if necessary
         let module = self.module; // this is for the borrow checker - allows us to access `module` without needing to borrow `self`
-        let named_struct_defs: &Rc<_> = &self.named_struct_defs; // similarly for the borrow checker - see note on above line
+        let named_structs: &Rc<_> = &self.named_structs; // similarly for the borrow checker - see note on above line
         let worklist: &Rc<_> = &self.worklist; // similarly for the borrow checker - see note on above line
         let globals: &Rc<_> = &self.globals; // similarly for the borrow checker - see note on above line
         let cur_fn = self
@@ -275,7 +275,7 @@ impl<'m> ModuleTaintState<'m> {
                         })
                         .collect(),
                     module,
-                    Rc::clone(named_struct_defs),
+                    Rc::clone(named_structs),
                     Rc::clone(globals),
                     Rc::clone(worklist),
                 )
@@ -290,7 +290,7 @@ impl<'m> ModuleTaintState<'m> {
                     &f.name,
                     param_llvm_types,
                     ret_llvm_type,
-                    self.named_struct_defs.clone(),
+                    Rc::clone(&self.named_structs),
                 ))
             },
             Entry::Occupied(oentry) => oentry.into_mut(),
@@ -499,7 +499,7 @@ impl<'m> ModuleTaintState<'m> {
                         },
                         TaintedType::TaintedPointer(pointee) => {
                             if self.config.dereferencing_tainted_ptr_gives_tainted {
-                                pointee.taint(self.named_struct_defs.clone(), self.cur_fn);
+                                pointee.taint(Rc::clone(&self.named_structs), self.cur_fn);
                             }
                             pointee.ty().clone()
                         },
@@ -745,7 +745,7 @@ impl<'m> ModuleTaintState<'m> {
                     &funcname,
                     call.arguments.iter().map(|(arg, _)| module.type_of(arg)),
                     &module.type_of(call),
-                    self.named_struct_defs.clone(),
+                    Rc::clone(&self.named_structs),
                 ))
             },
         };
@@ -841,7 +841,7 @@ impl<'m> ModuleTaintState<'m> {
         parent_ptr: &'a TaintedType,
         indices: impl IntoIterator<Item = &'b I>,
     ) -> Result<TaintedType, String> {
-        self.named_struct_defs.borrow_mut().get_element_ptr(&self.cur_fn, parent_ptr, indices)
+        self.named_structs.borrow_mut().get_element_ptr(&self.cur_fn, parent_ptr, indices)
     }
 }
 

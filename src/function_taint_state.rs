@@ -19,7 +19,7 @@ pub struct FunctionTaintState<'m> {
     /// Reference to the llvm-ir `Module`
     module: &'m Module,
     /// Reference to the module's named struct types
-    pub(crate) named_struct_defs: Rc<RefCell<NamedStructs<'m>>>,
+    pub(crate) named_structs: Rc<RefCell<NamedStructs<'m>>>,
     /// Reference to the module's globals
     pub(crate) globals: Rc<RefCell<Globals<'m>>>,
     /// Reference to the module's worklist
@@ -31,7 +31,7 @@ impl<'m> FunctionTaintState<'m> {
         name: &'m str,
         taintmap: HashMap<Name, TaintedType>,
         module: &'m Module,
-        named_struct_defs: Rc<RefCell<NamedStructs<'m>>>,
+        named_structs: Rc<RefCell<NamedStructs<'m>>>,
         globals: Rc<RefCell<Globals<'m>>>,
         worklist: Rc<RefCell<Worklist<'m>>>,
     ) -> Self {
@@ -39,7 +39,7 @@ impl<'m> FunctionTaintState<'m> {
             name,
             map: taintmap,
             module,
-            named_struct_defs,
+            named_structs,
             globals,
             worklist,
         }
@@ -169,7 +169,7 @@ impl<'m> FunctionTaintState<'m> {
                 let int_type = self.get_type_of_constant(&itp.operand)?;
                 let ptr_type = TaintedType::from_llvm_type(&self.module.type_of(itp));
                 if int_type.is_tainted_nonamedstruct() {
-                    Ok(ptr_type.to_tainted(self.named_struct_defs.clone(), self.name))
+                    Ok(ptr_type.to_tainted(Rc::clone(&self.named_structs), self.name))
                 } else {
                     Ok(ptr_type)
                 }
@@ -177,7 +177,7 @@ impl<'m> FunctionTaintState<'m> {
             Constant::PtrToInt(pti) => {
                 let ptr_type = self.get_type_of_constant(&pti.operand)?;
                 let int_type = TaintedType::from_llvm_type(&self.module.type_of(pti));
-                if ptr_type.is_tainted(self.named_struct_defs.clone(), self.name) {
+                if ptr_type.is_tainted(Rc::clone(&self.named_structs), self.name) {
                     Ok(int_type.to_tainted_nonamedstruct())
                 } else {
                     Ok(int_type)
@@ -185,7 +185,7 @@ impl<'m> FunctionTaintState<'m> {
             },
             Constant::GetElementPtr(gep) => {
                 let parent_ptr = self.get_type_of_constant(&gep.address)?;
-                self.named_struct_defs.borrow_mut().get_element_ptr(&self.name, &parent_ptr, &gep.indices)
+                self.named_structs.borrow_mut().get_element_ptr(&self.name, &parent_ptr, &gep.indices)
             },
             _ => unimplemented!("get_type_of_constant on {:?}", constant),
         }

@@ -149,7 +149,7 @@ impl Pointee {
             // users of that named struct to the worklist
             if let Some(struct_name) = &self.named_struct {
                 let mut worklist = fts.worklist.borrow_mut();
-                for user in fts.named_struct_defs.borrow().get_named_struct_users(struct_name) {
+                for user in fts.named_structs.borrow().get_named_struct_users(struct_name) {
                     worklist.add(user);
                 }
             }
