@@ -167,8 +167,7 @@ impl Pointee {
     /// Mark the pointed-to contents as tainted.
     ///
     /// Returns `true` if the contents' `TaintedType` changed.
-    #[allow(dead_code)]
-    pub(crate) fn taint(&mut self) -> bool {
+    pub(crate) fn taint(&self) -> bool {
         let mut pointee_ty = self.ty.borrow_mut();
         let tainted_ty = pointee_ty.to_tainted();
         if &*pointee_ty == &tainted_ty {

@@ -130,27 +130,45 @@ impl TaintedType {
         }
     }
 
+    /// Convert this type to the equivalent tainted type
     pub fn to_tainted(&self) -> Self {
         match self {
             TaintedType::UntaintedValue => TaintedType::TaintedValue,
             TaintedType::TaintedValue => TaintedType::TaintedValue,
             TaintedType::UntaintedPointer(pointee) => TaintedType::TaintedPointer(pointee.clone()),
             TaintedType::TaintedPointer(pointee) => TaintedType::TaintedPointer(pointee.clone()),
-            TaintedType::ArrayOrVector(_pointee) => {
-                unimplemented!("to_tainted on an array or vector")
+            TaintedType::ArrayOrVector(pointee) => {
+                pointee.taint();
+                TaintedType::ArrayOrVector(pointee.clone())
             },
-            TaintedType::Struct(_elements) => {
-                unimplemented!("to_tainted on a struct")
-                /*
+            TaintedType::Struct(elements) => {
                 for element in elements {
                     element.taint();
                 }
                 TaintedType::struct_of_pointees(elements.clone())
-                */
             },
             TaintedType::NamedStruct(_) => unimplemented!("to_tainted on a named struct"),
             TaintedType::UntaintedFnPtr => TaintedType::TaintedFnPtr,
             TaintedType::TaintedFnPtr => TaintedType::TaintedFnPtr,
+        }
+    }
+
+    /// Mark everything pointed to by this pointer as tainted.
+    ///
+    /// Recurses into structs/arrays/vectors, but not pointers:
+    /// - if this pointer points to a struct/array/vector, we will taint all
+    /// elements of that struct/array/vector
+    /// - if this pointer points to another pointer P, we will taint P, but not
+    /// things pointed to by P.
+    pub fn taint_contents(&self) {
+        match self {
+            TaintedType::UntaintedPointer(pointee) | TaintedType::TaintedPointer(pointee) => {
+                pointee.taint();
+            },
+            TaintedType::UntaintedFnPtr | TaintedType::TaintedFnPtr => {
+                panic!("taint_contents on a function pointer")
+            },
+            _ => panic!("taint_contents: not a pointer: {:?}", self),
         }
     }
 
