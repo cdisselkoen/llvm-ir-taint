@@ -87,7 +87,10 @@ impl TaintedType {
         match llvm_ty {
             Type::IntegerType { .. } => TaintedType::UntaintedValue,
             Type::PointerType { pointee_type, .. } => {
-                TaintedType::untainted_ptr_to(TaintedType::from_llvm_type(&pointee_type))
+                match pointee_type.as_ref() {
+                    Type::FuncType { .. } => TaintedType::UntaintedFnPtr,
+                    _ => TaintedType::untainted_ptr_to(TaintedType::from_llvm_type(&pointee_type))
+                }
             },
             Type::FPType(_) => TaintedType::UntaintedValue,
             Type::ArrayType { element_type, .. }
@@ -98,7 +101,6 @@ impl TaintedType {
                 TaintedType::struct_of(element_types.iter().map(|ty| TaintedType::from_llvm_type(ty)))
             },
             Type::NamedStructType { name } => TaintedType::NamedStruct(name.into()),
-            Type::FuncType { .. } => TaintedType::UntaintedFnPtr,
             Type::X86_MMXType => TaintedType::UntaintedValue,
             Type::MetadataType => TaintedType::UntaintedValue,
             _ => unimplemented!("TaintedType::from_llvm_type on {:?}", llvm_ty),
