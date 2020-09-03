@@ -524,16 +524,17 @@ impl<'m> ModuleTaintState<'m> {
                     // pointed-to contents are both untainted and unaliased,
                     // meaning that no pointers to any part of those contents
                     // (or anything referred to by those contents) already exist
-                    let pointee = TaintedType::from_llvm_type(&itp.to_type);
+                    let untainted_ptr_ty = TaintedType::from_llvm_type(&itp.to_type);
                     // all we do is create a tainted pointer from a tainted
                     // value, and an untainted pointer from an untainted value
                     let cur_fn = self.get_cur_fn();
-                    let ptr_ty = match cur_fn.get_type_of_operand(&itp.operand)? {
-                        TaintedType::UntaintedValue => TaintedType::untainted_ptr_to(pointee),
-                        TaintedType::TaintedValue => TaintedType::tainted_ptr_to(pointee),
-                        op_ty => return Err(format!("IntToPtr on a non-int: type {:?}", op_ty)),
+                    let in_ty = cur_fn.get_type_of_operand(&itp.operand)?;
+                    let ptr_ty = if self.is_type_tainted(&in_ty) {
+                        untainted_ptr_ty.to_tainted()
+                    } else {
+                        untainted_ptr_ty
                     };
-                    cur_fn.update_var_taintedtype(itp.get_result().clone(), ptr_ty)
+                    self.get_cur_fn().update_var_taintedtype(itp.get_result().clone(), ptr_ty)
                 },
                 Instruction::ICmp(icmp) => {
                     let cur_fn = self.get_cur_fn();
