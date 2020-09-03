@@ -128,8 +128,13 @@ impl<'m> FunctionTaintState<'m> {
             Constant::Undef(ty) => Ok(TaintedType::from_llvm_type(ty)),
             Constant::BlockAddress => Ok(TaintedType::UntaintedValue), // technically a pointer, but for our purposes an opaque constant
             Constant::GlobalReference { name, ty } => {
-                let mut globals = self.globals.borrow_mut();
-                Ok(globals.get_type_of_global(name.clone(), ty, &self.name).clone())
+                match ty.as_ref() {
+                    Type::FuncType { .. } => Ok(TaintedType::UntaintedFnPtr),
+                    _ => {
+                        let mut globals = self.globals.borrow_mut();
+                        Ok(globals.get_type_of_global(name.clone(), ty, &self.name).clone())
+                    },
+                }
             },
             Constant::Add(a) => self.get_type_of_constant_binop(a),
             Constant::Sub(s) => self.get_type_of_constant_binop(s),
