@@ -147,12 +147,13 @@ impl<'m> ModuleTaintState<'m> {
                     // external function (not defined in the current module):
                     // see how we're configured to handle this function
                     use config::ExternalFunctionHandling;
-                    match self.config.ext_functions.get(fn_name) {
-                        Some(ExternalFunctionHandling::IgnoreAndReturnUntainted) => {
+                    let handling = self.config.ext_functions.get(fn_name).unwrap_or(&self.config.ext_functions_default);
+                    match handling {
+                        ExternalFunctionHandling::IgnoreAndReturnUntainted => {
                             // no need to do anything
                             false
                         },
-                        Some(ExternalFunctionHandling::IgnoreAndReturnTainted) => {
+                        ExternalFunctionHandling::IgnoreAndReturnTainted => {
                             // mark the return value tainted, if it wasn't already.
                             // we require that anyone who places an external
                             // function on the worklist is responsible for
@@ -162,7 +163,7 @@ impl<'m> ModuleTaintState<'m> {
                             let summary = self.fn_summaries.get_mut(fn_name).unwrap_or_else(|| panic!("Internal invariant violated: External function {:?} on the worklist has no summary", fn_name));
                             summary.taint_ret()
                         },
-                        Some(ExternalFunctionHandling::PropagateTaintShallow) => {
+                        ExternalFunctionHandling::PropagateTaintShallow => {
                             // again, we require that anyone who places an
                             // external function on the worklist is responsible
                             // for making sure it has at least a default summary
@@ -179,10 +180,10 @@ impl<'m> ModuleTaintState<'m> {
                                 false
                             }
                         },
-                        Some(ExternalFunctionHandling::PropagateTaintDeep) => {
+                        ExternalFunctionHandling::PropagateTaintDeep => {
                             unimplemented!("ExternalFunctionHandling::PropagateTaintDeep")
                         },
-                        None | Some(ExternalFunctionHandling::Panic) => {
+                        ExternalFunctionHandling::Panic => {
                             panic!("Call of a function named {:?} not found in the module", fn_name)
                         },
                     }

@@ -4,9 +4,13 @@ use std::collections::HashMap;
 pub struct Config {
     /// How to handle external functions -- that is, functions not defined in the
     /// `Module`.
-    /// If we encounter an external function with a name not found in this map,
-    /// we will panic.
+    /// This is a map from LLVM function name to the handling that should be used
+    /// for that function.
     pub ext_functions: HashMap<String, ExternalFunctionHandling>,
+
+    /// How to handle external functions which _aren't_ present in the
+    /// `ext_functions` map above.
+    pub ext_functions_default: ExternalFunctionHandling,
 
     /// How to handle calls to function pointers.
     /// This is pretty limited, and ideally we'd have a better way to match
@@ -18,6 +22,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             ext_functions: HashMap::new(),
+            ext_functions_default: ExternalFunctionHandling::Panic,
             fn_pointers: ExternalFunctionHandling::Panic,
         }
     }
