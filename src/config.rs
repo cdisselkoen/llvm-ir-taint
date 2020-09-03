@@ -2,6 +2,17 @@ use std::collections::HashMap;
 
 #[non_exhaustive]
 pub struct Config {
+    /// If `true`, then dereferencing a tainted pointer always gives tainted
+    /// data.
+    /// If `false`, then dereferencing a tainted pointer works just like
+    /// dereferencing an untainted pointer. Values computed from the tainted
+    /// pointer (e.g. via pointer arithmetic) will be tainted, but values
+    /// resulting from dereferencing the tainted pointer will not be tainted
+    /// merely for that reason alone.
+    ///
+    /// Default is `true`.
+    pub dereferencing_tainted_ptr_gives_tainted: bool,
+
     /// How to handle external functions -- that is, functions not defined in the
     /// `Module`.
     /// This is a map from LLVM function name to the handling that should be used
@@ -21,6 +32,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            dereferencing_tainted_ptr_gives_tainted: true,
             ext_functions: HashMap::new(),
             ext_functions_default: ExternalFunctionHandling::Panic,
             fn_pointers: ExternalFunctionHandling::Panic,

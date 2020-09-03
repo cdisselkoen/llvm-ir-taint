@@ -491,15 +491,13 @@ impl<'m> ModuleTaintState<'m> {
                             pointee.ty().clone()
                         },
                         TaintedType::TaintedPointer(pointee) => {
-                            // we allow loading untainted data through a tainted
-                            // pointer, for this analysis. Caller is welcome to
-                            // do post-processing to taint every result of a
-                            // load from a tainted address and then rerun the
-                            // tainting algorithm.
+                            if self.config.dereferencing_tainted_ptr_gives_tainted {
+                                pointee.taint();
+                            }
                             pointee.ty().clone()
                         },
                     };
-                    cur_fn.update_var_taintedtype(load.get_result().clone(), result_ty)
+                    self.get_cur_fn().update_var_taintedtype(load.get_result().clone(), result_ty)
                 },
                 Instruction::Store(store) => {
                     let cur_fn = self.get_cur_fn();
