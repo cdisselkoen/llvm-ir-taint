@@ -153,7 +153,7 @@ impl<'m> ModuleTaintState<'m> {
                             false
                         },
                         Some(ExternalFunctionHandling::IgnoreAndReturnTainted) => {
-                            // mark the return value tainted, if it wasn't already
+                            // mark the return value tainted, if it wasn't already.
                             // we require that anyone who places an external
                             // function on the worklist is responsible for
                             // making sure it has at least a default summary in
@@ -162,8 +162,25 @@ impl<'m> ModuleTaintState<'m> {
                             let summary = self.fn_summaries.get_mut(fn_name).unwrap_or_else(|| panic!("Internal invariant violated: External function {:?} on the worklist has no summary", fn_name));
                             summary.taint_ret()
                         },
-                        Some(ExternalFunctionHandling::PropagateTaint) => {
-                            unimplemented!("ExternalFunctionHandling::PropagateTaint")
+                        Some(ExternalFunctionHandling::PropagateTaintShallow) => {
+                            // again, we require that anyone who places an
+                            // external function on the worklist is responsible
+                            // for making sure it has at least a default summary
+                            // in place, so we can assume here that there is a
+                            // summary
+                            let summary = self.fn_summaries.get_mut(fn_name).unwrap_or_else(|| panic!("Internal invariant violated: External function {:?} on the worklist has no summary", fn_name));
+                            // we effectively inline self.is_type_tainted(), in order to prove to the borrow checker that `summary` borrows a different part of `self` than we need for `is_type_tainted()`
+                            let mut named_struct_defs = self.named_struct_defs.borrow_mut();
+                            let cur_fn = &self.cur_fn;
+                            if summary.get_params().any(|p| named_struct_defs.is_type_tainted(p, cur_fn)) {
+                                summary.taint_ret()
+                            } else {
+                                // no need to do anything, just like the IgnoreAndReturnUntainted case
+                                false
+                            }
+                        },
+                        Some(ExternalFunctionHandling::PropagateTaintDeep) => {
+                            unimplemented!("ExternalFunctionHandling::PropagateTaintDeep")
                         },
                         None | Some(ExternalFunctionHandling::Panic) => {
                             panic!("Call of a function named {:?} not found in the module", fn_name)
@@ -629,8 +646,38 @@ impl<'m> ModuleTaintState<'m> {
                                         },
                                     }
                                 },
-                                ExternalFunctionHandling::PropagateTaint => {
-                                    unimplemented!("ExternalFunctionHandling::PropagateTaint")
+                                ExternalFunctionHandling::PropagateTaintShallow => {
+                                    let cur_fn = self.get_cur_fn();
+                                    if call
+                                        .arguments
+                                        .iter()
+                                        .map(|(o, _)| cur_fn.get_type_of_operand(o))
+                                        .collect::<Result<Vec<_>, String>>()?
+                                        .into_iter()
+                                        .any(|t| self.is_type_tainted(&t))
+                                    {
+                                        // just like IgnoreAndReturnTainted
+                                        match &call.dest {
+                                            None => Ok(false),
+                                            Some(dest) => {
+                                                let untainted_ret_ty = TaintedType::from_llvm_type(&self.module.type_of(call));
+                                                let tainted_ret_ty = untainted_ret_ty.to_tainted();
+                                                self.get_cur_fn().update_var_taintedtype(dest.clone(), tainted_ret_ty)
+                                            },
+                                        }
+                                    } else {
+                                        // just like IgnoreAndReturnUntainted
+                                        match &call.dest {
+                                            None => Ok(false),
+                                            Some(dest) => {
+                                                let untainted_ret_ty = TaintedType::from_llvm_type(&self.module.type_of(call));
+                                                self.get_cur_fn().update_var_taintedtype(dest.clone(), untainted_ret_ty)
+                                            },
+                                        }
+                                    }
+                                },
+                                ExternalFunctionHandling::PropagateTaintDeep => {
+                                    unimplemented!("ExternalFunctionHandling::PropagateTaintDeep")
                                 },
                                 ExternalFunctionHandling::Panic => {
                                     panic!("Call of a function pointer")

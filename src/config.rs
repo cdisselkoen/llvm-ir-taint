@@ -30,9 +30,21 @@ pub enum ExternalFunctionHandling {
     /// Ignore the call to the function, and assume it returns tainted data.
     IgnoreAndReturnTainted,
     /// Assume that the function returns tainted data if and only if any of its
-    /// parameters are tainted or point to tainted data (potentially
-    /// recursively).
-    PropagateTaint,
+    /// parameters are tainted. This looks only at the shallow types of
+    /// parameters -- for instance, for pointers, it looks only at whether the
+    /// pointer value itself is tainted, not whether any of the pointed-to data
+    /// is tainted. Likewise, this only taints the return value shallowly -- if
+    /// the return value is a pointer, this will taint the pointer value itself,
+    /// but not any of the pointed-to data.
+    PropagateTaintShallow,
+    /// Assume that the function returns tainted data if and only if any of its
+    /// parameters are tainted or point to tainted data.
+    /// This looks at the deep types of parameters -- for instance, for pointers,
+    /// it looks at whether the pointer value itself _or any of the pointed-to
+    /// data_ is tainted, potentially recursively. Likewise, this taints the return
+    /// value deeply -- if the return value is a pointer, this will taint not only
+    /// the pointer value itself, but also _all_ of the data it points to.
+    PropagateTaintDeep,
     /// Panic if we encounter a call to this function.
     Panic,
 }
