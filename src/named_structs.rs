@@ -71,6 +71,7 @@ impl<'m> NamedStructs<'m> {
             TaintedType::TaintedValue => true,
             TaintedType::UntaintedPointer(_) => false,
             TaintedType::TaintedPointer(_) => true,
+            TaintedType::ArrayOrVector(element) => self.is_type_tainted(&element.ty(), cur_fn),
             TaintedType::Struct(elements) => {
                 // a struct is tainted if any of its elements are
                 elements.iter().any(|e| self.is_type_tainted(&e.ty(), cur_fn))
@@ -114,7 +115,7 @@ impl<'m> NamedStructs<'m> {
             TaintedType::UntaintedFnPtr | TaintedType::TaintedFnPtr => {
                 Err("get_element_ptr on a function pointer".into())
             },
-            TaintedType::Struct(_) | TaintedType::NamedStruct(_) => {
+            TaintedType::ArrayOrVector(_) | TaintedType::Struct(_) | TaintedType::NamedStruct(_) => {
                 Err("get_element_ptr: address is not a pointer, or too many indices".into())
             },
             TaintedType::UntaintedPointer(pointee) | TaintedType::TaintedPointer(pointee) => {
@@ -123,11 +124,7 @@ impl<'m> NamedStructs<'m> {
                 let existing_global = pointee.get_global_name();
                 match pointee_ty {
                     TaintedType::TaintedValue | TaintedType::UntaintedValue => {
-                        // We expect that indices.peek() would give None in this
-                        // case. However, there may be an extra index due to
-                        // selecting an element of a first-class array or vector
-                        // (which are TaintedValue or UntaintedValue in our type
-                        // system). So we just ignore any extra indices.
+                        assert!(indices.peek().is_none(), "get_element_ptr: too many indices");
                         if self.is_type_tainted(parent_ptr, cur_fn) {
                             Ok(TaintedType::TaintedPointer(pointee.clone()))
                         } else {
@@ -154,11 +151,36 @@ impl<'m> NamedStructs<'m> {
                         // of the parent_ptr. I believe this is correct for most use
                         // cases.
                         match indices.next() {
-                            None if self.is_type_tainted(inner_ptr, cur_fn) => {
-                                Ok(TaintedType::TaintedPointer(pointee.clone()))
+                            None => {
+                                // this case is the same as the TaintedValue | UntaintedValue case
+                                if self.is_type_tainted(inner_ptr, cur_fn) {
+                                    Ok(TaintedType::TaintedPointer(pointee.clone()))
+                                } else {
+                                    Ok(TaintedType::UntaintedPointer(pointee.clone()))
+                                }
                             },
-                            None => Ok(TaintedType::UntaintedPointer(pointee.clone())),
                             Some(_) => self._get_element_ptr(cur_fn, inner_ptr, indices),
+                        }
+                    },
+                    TaintedType::ArrayOrVector(element) => {
+                        match indices.next() {
+                            None => {
+                                // this case is the same as the TaintedValue | UntaintedValue case
+                                if self.is_type_tainted(parent_ptr, cur_fn) {
+                                    Ok(TaintedType::TaintedPointer(pointee.clone()))
+                                } else {
+                                    Ok(TaintedType::UntaintedPointer(pointee.clone()))
+                                }
+                            },
+                            Some(_) => {
+                                // we selected an element of the array or vector
+                                let ptr_to_element = if self.is_type_tainted(parent_ptr, cur_fn) {
+                                    TaintedType::TaintedPointer(element.clone())
+                                } else {
+                                    TaintedType::UntaintedPointer(element.clone())
+                                };
+                                self._get_element_ptr(cur_fn, &ptr_to_element, indices)
+                            }
                         }
                     },
                     TaintedType::Struct(_) | TaintedType::NamedStruct(_) => {

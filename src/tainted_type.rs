@@ -4,16 +4,21 @@ use llvm_ir::Type;
 /// The type system which we use for taint-tracking
 #[derive(PartialEq, Eq, Clone, Debug)]
 pub enum TaintedType {
-    /// An untainted value which is not a pointer or struct.
-    /// This may also be a (first-class) array or vector with an untainted element type.
+    /// An untainted value which is not a pointer, struct, array, or vector.
     UntaintedValue,
-    /// A tainted value which is not a pointer or struct.
-    /// This may also be a (first-class) array or vector with a tainted element type.
+    /// A tainted value which is not a pointer, struct, array, or vector.
     TaintedValue,
-    /// An untainted pointer to either a scalar or an array.
+    /// An untainted pointer to either a scalar or an (implicit) array.
+    /// By implicit we mean that this represents LLVM `i8*`, not LLVM `[300 x i8]*`.
     UntaintedPointer(Pointee),
-    /// A tainted pointer to either a scalar or an array.
+    /// A tainted pointer to either a scalar or an (implicit) array.
+    /// By implicit we mean that this represents LLVM `i8*`, not LLVM `[300 x i8]*`.
     TaintedPointer(Pointee),
+    /// An array or vector, with the given element type (and any number of
+    /// elements).
+    /// All elements are assumed to have the same type, which means that if any
+    /// of them is tainted, all of them are tainted.
+    ArrayOrVector(Pointee),
     /// A struct, with the given element types
     Struct(Vec<Pointee>),
     /// A named struct, with the given name. To get the actual type of the named
@@ -48,6 +53,17 @@ impl TaintedType {
         Self::TaintedPointer(pointee)
     }
 
+    /// Create an array or vector with the given element type, assuming that no
+    /// pointers to the elements already exist
+    pub fn array_or_vec_of(element_ty: TaintedType) -> Self {
+        Self::ArrayOrVector(Pointee::new(element_ty))
+    }
+
+    /// Create an array or vector with the given `Pointee` as its element type
+    pub fn array_or_vec_of_pointee(pointee: Pointee) -> Self {
+        Self::ArrayOrVector(pointee)
+    }
+
     /// Create a struct of the given elements, assuming that no pointers to those
     /// elements already exist
     pub fn struct_of(elements: impl IntoIterator<Item = TaintedType>) -> Self {
@@ -74,8 +90,10 @@ impl TaintedType {
                 TaintedType::untainted_ptr_to(TaintedType::from_llvm_type(&pointee_type))
             },
             Type::FPType(_) => TaintedType::UntaintedValue,
-            Type::VectorType { element_type, .. } => TaintedType::from_llvm_type(&element_type),
-            Type::ArrayType { element_type, .. } => TaintedType::from_llvm_type(&element_type),
+            Type::ArrayType { element_type, .. }
+            | Type::VectorType { element_type, .. } => {
+                TaintedType::array_or_vec_of(TaintedType::from_llvm_type(&element_type))
+            },
             Type::StructType { element_types, .. } => {
                 TaintedType::struct_of(element_types.iter().map(|ty| TaintedType::from_llvm_type(ty)))
             },
@@ -89,8 +107,11 @@ impl TaintedType {
 
     /// Is this type tainted?
     ///
-    /// This function only works on non-struct types. For a more generic function
-    /// that works on all types, use `ModuleTaintState::is_type_tainted()` or
+    /// This function only works on non-struct types. (It does work on array or
+    /// vector types, as long as the element type isn't a struct type.)
+    ///
+    /// For a more generic function that works on all types, use
+    /// `ModuleTaintState::is_type_tainted()` or
     /// `ModuleTaintResult::is_type_tainted()`.
     pub fn is_tainted_nonstruct(&self) -> bool {
         match self {
@@ -100,6 +121,7 @@ impl TaintedType {
             TaintedType::TaintedPointer(_) => true,
             TaintedType::UntaintedFnPtr => false,
             TaintedType::TaintedFnPtr => true,
+            TaintedType::ArrayOrVector(pointee) => pointee.ty().is_tainted_nonstruct(),
             TaintedType::Struct(_) | TaintedType::NamedStruct(_) => {
                 panic!("is_tainted_nonstruct on a struct type")
             },
@@ -112,6 +134,9 @@ impl TaintedType {
             TaintedType::TaintedValue => TaintedType::TaintedValue,
             TaintedType::UntaintedPointer(pointee) => TaintedType::TaintedPointer(pointee.clone()),
             TaintedType::TaintedPointer(pointee) => TaintedType::TaintedPointer(pointee.clone()),
+            TaintedType::ArrayOrVector(_pointee) => {
+                unimplemented!("to_tainted on an array or vector")
+            },
             TaintedType::Struct(_elements) => {
                 unimplemented!("to_tainted on a struct")
                 /*
@@ -142,16 +167,19 @@ impl TaintedType {
             (TaintedValue, UntaintedValue) => Ok(TaintedValue),
             (TaintedValue, TaintedValue) => Ok(TaintedValue),
             (UntaintedPointer(pointee1), UntaintedPointer(pointee2)) => Ok(Self::untainted_ptr_to(
-                pointee1.ty().join(&*pointee2.ty())?,
+                pointee1.ty().join(&pointee2.ty())?,
             )),
             (UntaintedPointer(pointee1), TaintedPointer(pointee2)) => Ok(Self::tainted_ptr_to(
-                pointee1.ty().join(&*pointee2.ty())?,
+                pointee1.ty().join(&pointee2.ty())?,
             )),
             (TaintedPointer(pointee1), UntaintedPointer(pointee2)) => Ok(Self::tainted_ptr_to(
-                pointee1.ty().join(&*pointee2.ty())?,
+                pointee1.ty().join(&pointee2.ty())?,
             )),
             (TaintedPointer(pointee1), TaintedPointer(pointee2)) => Ok(Self::tainted_ptr_to(
-                pointee1.ty().join(&*pointee2.ty())?,
+                pointee1.ty().join(&pointee2.ty())?,
+            )),
+            (ArrayOrVector(element1), ArrayOrVector(element2)) => Ok(Self::array_or_vec_of(
+                element1.ty().join(&element2.ty())?,
             )),
             (Struct(elements1), Struct(elements2)) => {
                 if elements1.len() != elements2.len() {

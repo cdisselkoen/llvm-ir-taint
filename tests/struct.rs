@@ -195,7 +195,7 @@ fn with_array() {
         mtr.get_named_struct_type("struct.WithArray"),
         &TaintedType::struct_of(vec![
             TaintedType::NamedStruct("struct.Mismatched".into()),
-            TaintedType::TaintedValue,
+            TaintedType::array_or_vec_of(TaintedType::TaintedValue),
             TaintedType::NamedStruct("struct.Mismatched".into()),
         ])
     );

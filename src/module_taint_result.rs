@@ -45,6 +45,7 @@ impl<'m> ModuleTaintResult<'m> {
             TaintedType::TaintedValue => true,
             TaintedType::UntaintedPointer(_) => false,
             TaintedType::TaintedPointer(_) => true,
+            TaintedType::ArrayOrVector(element) => self.is_type_tainted(&element.ty()),
             TaintedType::Struct(elements) => {
                 // a struct is tainted if any of its elements are
                 elements.iter().any(|e| self.is_type_tainted(&e.ty()))

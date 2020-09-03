@@ -344,6 +344,13 @@ impl<'m> ModuleTaintState<'m> {
                             },
                             _ => return Err("Bitcast from pointer to non-pointer".into()), // my reading of the LLVM 9 LangRef disallows this
                         },
+                        from_ty @ TaintedType::ArrayOrVector(_) => {
+                            if self.is_type_tainted(&from_ty) {
+                                TaintedType::from_llvm_type(&bc.to_type).to_tainted()
+                            } else {
+                                TaintedType::from_llvm_type(&bc.to_type)
+                            }
+                        },
                         from_ty @ TaintedType::Struct(_) => {
                             if self.is_type_tainted(&from_ty) {
                                 TaintedType::from_llvm_type(&bc.to_type).to_tainted()
@@ -430,7 +437,9 @@ impl<'m> ModuleTaintState<'m> {
                         TaintedType::UntaintedFnPtr | TaintedType::TaintedFnPtr => {
                             return Err("Loading from a function pointer".into());
                         },
-                        TaintedType::Struct(_) | TaintedType::NamedStruct(_) => {
+                        TaintedType::ArrayOrVector(_)
+                        | TaintedType::Struct(_)
+                        | TaintedType::NamedStruct(_) => {
                             return Err(format!(
                                 "Load: address is not a pointer: {:?}",
                                 &load.address
@@ -462,10 +471,14 @@ impl<'m> ModuleTaintState<'m> {
                         TaintedType::UntaintedFnPtr | TaintedType::TaintedFnPtr => {
                             Err("Storing to a function pointer".into())
                         },
-                        TaintedType::Struct(_) | TaintedType::NamedStruct(_) => Err(format!(
-                            "Store: address is not a pointer: {:?}",
-                            &store.address
-                        )),
+                        TaintedType::ArrayOrVector(_)
+                        | TaintedType::Struct(_)
+                        | TaintedType::NamedStruct(_) => {
+                            Err(format!(
+                                "Store: address is not a pointer: {:?}",
+                                &store.address
+                            ))
+                        },
                         TaintedType::UntaintedPointer(mut pointee) | TaintedType::TaintedPointer(mut pointee) => {
                             // update the store address's type based on the value being stored through it.
                             // specifically, update the pointee in that address type:
@@ -497,6 +510,9 @@ impl<'m> ModuleTaintState<'m> {
                         },
                         TaintedType::TaintedValue => {
                             Err(format!("PtrToInt on an TaintedValue: {:?}", &pti.operand))
+                        },
+                        TaintedType::ArrayOrVector(_) => {
+                            Err(format!("PtrToInt on an array or vector: {:?}", &pti.operand))
                         },
                         TaintedType::Struct(_) | TaintedType::NamedStruct(_) => {
                             Err(format!("PtrToInt on a struct: {:?}", &pti.operand))

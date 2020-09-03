@@ -93,6 +93,10 @@ impl<'m> FunctionTaintState<'m> {
                 "is_scalar_operand_tainted(): operand has pointer type: {:?}",
                 op
             )),
+            TaintedType::ArrayOrVector(_) => Err(format!(
+                "is_scalar_operand_tainted(): operand has array or vector type: {:?}",
+                op
+            )),
             TaintedType::Struct(_) | TaintedType::NamedStruct(_) => Err(format!(
                 "is_scalar_operand_tainted(): operand has struct type: {:?}",
                 op
