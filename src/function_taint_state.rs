@@ -168,8 +168,8 @@ impl<'m> FunctionTaintState<'m> {
             Constant::IntToPtr(itp) => {
                 let int_type = self.get_type_of_constant(&itp.operand)?;
                 let ptr_type = TaintedType::from_llvm_type(&self.module.type_of(itp));
-                if int_type.is_tainted_nonstruct() {
-                    Ok(ptr_type.to_tainted())
+                if int_type.is_tainted_nonamedstruct() {
+                    Ok(ptr_type.to_tainted(self.named_struct_defs.clone(), self.name))
                 } else {
                     Ok(ptr_type)
                 }
@@ -177,8 +177,8 @@ impl<'m> FunctionTaintState<'m> {
             Constant::PtrToInt(pti) => {
                 let ptr_type = self.get_type_of_constant(&pti.operand)?;
                 let int_type = TaintedType::from_llvm_type(&self.module.type_of(pti));
-                if ptr_type.is_tainted_nonstruct() {
-                    Ok(int_type.to_tainted())
+                if ptr_type.is_tainted(self.named_struct_defs.clone(), self.name) {
+                    Ok(int_type.to_tainted_nonamedstruct())
                 } else {
                     Ok(int_type)
                 }

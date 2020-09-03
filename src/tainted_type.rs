@@ -1,5 +1,8 @@
+use crate::named_structs::NamedStructs;
 use crate::pointee::Pointee;
 use llvm_ir::Type;
+use std::cell::RefCell;
+use std::rc::Rc;
 
 /// The type system which we use for taint-tracking
 #[derive(PartialEq, Eq, Clone, Debug)]
@@ -109,13 +112,15 @@ impl TaintedType {
 
     /// Is this type tainted?
     ///
-    /// This function only works on non-struct types. (It does work on array or
-    /// vector types, as long as the element type isn't a struct type.)
+    /// This function panics on named struct types. (It does work on array,
+    /// vector, and anonymous struct types, as long as the element type isn't a
+    /// named struct type.)
     ///
     /// For a more generic function that works on all types, use
+    /// `TaintedType::is_tainted()` (below),
     /// `ModuleTaintState::is_type_tainted()` or
     /// `ModuleTaintResult::is_type_tainted()`.
-    pub fn is_tainted_nonstruct(&self) -> bool {
+    pub fn is_tainted_nonamedstruct(&self) -> bool {
         match self {
             TaintedType::UntaintedValue => false,
             TaintedType::TaintedValue => true,
@@ -123,33 +128,99 @@ impl TaintedType {
             TaintedType::TaintedPointer(_) => true,
             TaintedType::UntaintedFnPtr => false,
             TaintedType::TaintedFnPtr => true,
-            TaintedType::ArrayOrVector(pointee) => pointee.ty().is_tainted_nonstruct(),
-            TaintedType::Struct(_) | TaintedType::NamedStruct(_) => {
-                panic!("is_tainted_nonstruct on a struct type")
-            },
+            TaintedType::ArrayOrVector(pointee) => pointee.ty().is_tainted_nonamedstruct(),
+            TaintedType::Struct(elements) => {
+                // a struct is tainted if any of its elements are
+                elements.iter().any(|p| p.ty().is_tainted_nonamedstruct())
+            }
+            TaintedType::NamedStruct(_) => panic!("is_tainted_nonamedstruct on a named struct type"),
         }
     }
 
-    /// Convert this type to the equivalent tainted type
-    pub fn to_tainted(&self) -> Self {
+    /// Is this type tainted?
+    ///
+    /// This function handles all types, including named struct types.
+    ///
+    /// Alternately you can also use `ModuleTaintState::is_type_tainted()` or
+    /// `ModuleTaintResult::is_type_tainted()`.
+    pub fn is_tainted<'m>(&self, named_structs: Rc<RefCell<NamedStructs<'m>>>, cur_fn: &'m str) -> bool {
+        match self {
+            TaintedType::NamedStruct(name) => {
+                let mut named_structs = named_structs.borrow_mut();
+                let structty = named_structs.get_named_struct_type(name.clone(), cur_fn);
+                structty.is_tainted_nonamedstruct()
+            },
+            TaintedType::ArrayOrVector(pointee) => pointee.ty().is_tainted(named_structs, cur_fn),
+            TaintedType::Struct(elements) => {
+                // a struct is tainted if any of its elements are
+                elements.iter().any(|p| p.ty().is_tainted(named_structs.clone(), cur_fn))
+            },
+            _ => self.is_tainted_nonamedstruct(),
+        }
+    }
+
+    /// Convert this (tainted or untainted) type to the equivalent tainted type.
+    ///
+    /// This function panics on named struct types. (It does work on array,
+    /// vector, and anonymous struct types, as long as the element type isn't a
+    /// named struct type.)
+    ///
+    /// For a more generic function that works on all types, use
+    /// `TaintedType::to_tainted()` (below) or
+    /// `ModuleTaintState::to_tainted()`.
+    pub fn to_tainted_nonamedstruct(&self) -> Self {
         match self {
             TaintedType::UntaintedValue => TaintedType::TaintedValue,
             TaintedType::TaintedValue => TaintedType::TaintedValue,
             TaintedType::UntaintedPointer(pointee) => TaintedType::TaintedPointer(pointee.clone()),
             TaintedType::TaintedPointer(pointee) => TaintedType::TaintedPointer(pointee.clone()),
             TaintedType::ArrayOrVector(pointee) => {
-                pointee.taint();
+                pointee.taint_nonamedstruct();
                 TaintedType::ArrayOrVector(pointee.clone())
             },
             TaintedType::Struct(elements) => {
                 for element in elements {
-                    element.taint();
+                    element.taint_nonamedstruct();
                 }
                 TaintedType::struct_of_pointees(elements.clone())
             },
-            TaintedType::NamedStruct(_) => unimplemented!("to_tainted on a named struct"),
+            TaintedType::NamedStruct(_) => panic!("to_tainted_nonamedstruct on a named struct"),
             TaintedType::UntaintedFnPtr => TaintedType::TaintedFnPtr,
             TaintedType::TaintedFnPtr => TaintedType::TaintedFnPtr,
+        }
+    }
+
+    /// Convert this (tainted or untainted) type to the equivalent tainted type.
+    ///
+    /// This function handles all types, including named struct types.
+    ///
+    /// Alternately you can also use `ModuleTaintState::to_tainted()`.
+    pub fn to_tainted<'m>(&self, named_structs: Rc<RefCell<NamedStructs<'m>>>, cur_fn: &'m str) -> Self {
+        match self {
+            TaintedType::NamedStruct(name) => {
+                let mut named_structs_ref = named_structs.borrow_mut();
+                let structty = named_structs_ref.get_named_struct_type(name.clone(), cur_fn);
+                match structty {
+                    TaintedType::Struct(elements) => {
+                        for element in elements {
+                            element.taint(named_structs.clone(), cur_fn);
+                        }
+                        TaintedType::NamedStruct(name.clone())
+                    },
+                    _ => panic!("Expected get_named_struct_type to return TaintedType::Struct"),
+                }
+            },
+            TaintedType::ArrayOrVector(pointee) => {
+                pointee.taint(named_structs, cur_fn);
+                TaintedType::ArrayOrVector(pointee.clone())
+            }
+            TaintedType::Struct(elements) => {
+                for element in elements {
+                    element.taint(named_structs.clone(), cur_fn);
+                }
+                TaintedType::struct_of_pointees(elements.clone())
+            }
+            _ => self.to_tainted_nonamedstruct(),
         }
     }
 
@@ -160,10 +231,35 @@ impl TaintedType {
     /// elements of that struct/array/vector
     /// - if this pointer points to another pointer P, we will taint P, but not
     /// things pointed to by P.
-    pub fn taint_contents(&self) {
+    ///
+    /// This function panics if the pointer points to a named struct type. (It
+    /// does work on array, vector, and anonymous struct types, as described
+    /// above.)
+    pub fn taint_contents_nonamedstruct(&self) {
         match self {
             TaintedType::UntaintedPointer(pointee) | TaintedType::TaintedPointer(pointee) => {
-                pointee.taint();
+                pointee.taint_nonamedstruct();
+            },
+            TaintedType::UntaintedFnPtr | TaintedType::TaintedFnPtr => {
+                panic!("taint_contents on a function pointer")
+            },
+            _ => panic!("taint_contents: not a pointer: {:?}", self),
+        }
+    }
+
+    /// Mark everything pointed to by this pointer as tainted.
+    ///
+    /// Recurses into structs/arrays/vectors, but not pointers:
+    /// - if this pointer points to a struct/array/vector, we will taint all
+    /// elements of that struct/array/vector
+    /// - if this pointer points to another pointer P, we will taint P, but not
+    /// things pointed to by P.
+    ///
+    /// This function handles all types, including named struct types.
+    pub fn taint_contents<'m>(&self, named_structs: Rc<RefCell<NamedStructs<'m>>>, cur_fn: &'m str) {
+        match self {
+            TaintedType::UntaintedPointer(pointee) | TaintedType::TaintedPointer(pointee) => {
+                pointee.taint(named_structs, cur_fn);
             },
             TaintedType::UntaintedFnPtr | TaintedType::TaintedFnPtr => {
                 panic!("taint_contents on a function pointer")

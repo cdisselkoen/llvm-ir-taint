@@ -1,20 +1,32 @@
+use crate::named_structs::NamedStructs;
 use crate::tainted_type::TaintedType;
 use llvm_ir::{Type, TypeRef};
+use std::cell::RefCell;
+use std::rc::Rc;
 
-pub struct FunctionSummary {
+pub struct FunctionSummary<'m> {
+    /// Name of the function
+    name: &'m str,
+
     /// `TaintedType`s of the function parameters
     params: Vec<TaintedType>,
 
     /// `TaintedType` of the return type, or `None` for void return type
     ret: Option<TaintedType>,
+
+    /// Reference to the module's named struct types
+    named_structs: Rc<RefCell<NamedStructs<'m>>>,
 }
 
-impl FunctionSummary {
+impl<'m> FunctionSummary<'m> {
     pub fn new_untainted(
+        name: &'m str,
         param_llvm_types: impl IntoIterator<Item = TypeRef>,
         ret_llvm_type: &Type,
+        named_structs: Rc<RefCell<NamedStructs<'m>>>,
     ) -> Self {
         Self {
+            name,
             params: param_llvm_types
                 .into_iter()
                 .map(|ty| TaintedType::from_llvm_type(&ty))
@@ -23,6 +35,7 @@ impl FunctionSummary {
                 Type::VoidType => None,
                 ty => Some(TaintedType::from_llvm_type(ty)),
             },
+            named_structs,
         }
     }
 
@@ -90,7 +103,7 @@ impl FunctionSummary {
         match &mut self.ret {
             None => false,
             Some(ret) => {
-                let tainted = ret.to_tainted();
+                let tainted = ret.to_tainted(self.named_structs.clone(), self.name);
                 if ret == &tainted {
                     false
                 } else {

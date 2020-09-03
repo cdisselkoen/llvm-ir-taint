@@ -28,7 +28,7 @@ pub(crate) struct ModuleTaintState<'m> {
     fn_taint_states: HashMap<String, FunctionTaintState<'m>>,
 
     /// Map from function name to the `FunctionSummary` for that function
-    fn_summaries: HashMap<String, FunctionSummary>,
+    fn_summaries: HashMap<String, FunctionSummary<'m>>,
 
     /// Named structs used in the module, and their definitions (taint statuses)
     named_struct_defs: Rc<RefCell<NamedStructs<'m>>>,
@@ -245,6 +245,11 @@ impl<'m> ModuleTaintState<'m> {
         self.named_struct_defs.borrow_mut().is_type_tainted(ty, &self.cur_fn)
     }
 
+    /// Convert this (tainted or untainted) type to the equivalent tainted type.
+    pub fn to_tainted(&self, ty: &TaintedType) -> TaintedType {
+        ty.to_tainted(self.named_struct_defs.clone(), self.cur_fn)
+    }
+
     /// Process the given `Function`.
     ///
     /// Returns `true` if a change was made to the function's taint state, or `false` if not.
@@ -282,8 +287,10 @@ impl<'m> ModuleTaintState<'m> {
                 let param_llvm_types = f.parameters.iter().map(|p| module.type_of(p));
                 let ret_llvm_type = &f.return_type;
                 ventry.insert(FunctionSummary::new_untainted(
+                    &f.name,
                     param_llvm_types,
                     ret_llvm_type,
+                    self.named_struct_defs.clone(),
                 ))
             },
             Entry::Occupied(oentry) => oentry.into_mut(),
@@ -362,12 +369,12 @@ impl<'m> ModuleTaintState<'m> {
                             TaintedType::from_llvm_type(&bc.to_type)
                         },
                         TaintedType::TaintedValue | TaintedType::TaintedFnPtr => {
-                            TaintedType::from_llvm_type(&bc.to_type).to_tainted()
+                            self.to_tainted(&TaintedType::from_llvm_type(&bc.to_type))
                         },
                         TaintedType::UntaintedPointer(pointee) => match bc.to_type.as_ref() {
                             Type::PointerType { pointee_type, .. } => {
                                 let result_pointee_type = if self.is_type_tainted(&pointee.ty()) {
-                                    TaintedType::from_llvm_type(&pointee_type).to_tainted()
+                                    self.to_tainted(&TaintedType::from_llvm_type(&pointee_type))
                                 } else {
                                     TaintedType::from_llvm_type(&pointee_type)
                                 };
@@ -378,7 +385,7 @@ impl<'m> ModuleTaintState<'m> {
                         TaintedType::TaintedPointer(pointee) => match bc.to_type.as_ref() {
                             Type::PointerType { pointee_type, .. } => {
                                 let result_pointee_type = if self.is_type_tainted(&pointee.ty()) {
-                                    TaintedType::from_llvm_type(&pointee_type).to_tainted()
+                                    self.to_tainted(&TaintedType::from_llvm_type(&pointee_type))
                                 } else {
                                     TaintedType::from_llvm_type(&pointee_type)
                                 };
@@ -388,14 +395,14 @@ impl<'m> ModuleTaintState<'m> {
                         },
                         from_ty @ TaintedType::ArrayOrVector(_) => {
                             if self.is_type_tainted(&from_ty) {
-                                TaintedType::from_llvm_type(&bc.to_type).to_tainted()
+                                self.to_tainted(&TaintedType::from_llvm_type(&bc.to_type))
                             } else {
                                 TaintedType::from_llvm_type(&bc.to_type)
                             }
                         },
                         from_ty @ TaintedType::Struct(_) => {
                             if self.is_type_tainted(&from_ty) {
-                                TaintedType::from_llvm_type(&bc.to_type).to_tainted()
+                                self.to_tainted(&TaintedType::from_llvm_type(&bc.to_type))
                             } else {
                                 TaintedType::from_llvm_type(&bc.to_type)
                             }
@@ -492,7 +499,7 @@ impl<'m> ModuleTaintState<'m> {
                         },
                         TaintedType::TaintedPointer(pointee) => {
                             if self.config.dereferencing_tainted_ptr_gives_tainted {
-                                pointee.taint();
+                                pointee.taint(self.named_struct_defs.clone(), self.cur_fn);
                             }
                             pointee.ty().clone()
                         },
@@ -570,7 +577,7 @@ impl<'m> ModuleTaintState<'m> {
                     let cur_fn = self.get_cur_fn();
                     let in_ty = cur_fn.get_type_of_operand(&itp.operand)?;
                     let ptr_ty = if self.is_type_tainted(&in_ty) {
-                        untainted_ptr_ty.to_tainted()
+                        self.to_tainted(&untainted_ptr_ty)
                     } else {
                         untainted_ptr_ty
                     };
@@ -664,7 +671,7 @@ impl<'m> ModuleTaintState<'m> {
                                         None => Ok(false),
                                         Some(dest) => {
                                             let untainted_ret_ty = TaintedType::from_llvm_type(&self.module.type_of(call));
-                                            let tainted_ret_ty = untainted_ret_ty.to_tainted();
+                                            let tainted_ret_ty = self.to_tainted(&untainted_ret_ty);
                                             self.get_cur_fn().update_var_taintedtype(dest.clone(), tainted_ret_ty)
                                         },
                                     }
@@ -684,7 +691,7 @@ impl<'m> ModuleTaintState<'m> {
                                             None => Ok(false),
                                             Some(dest) => {
                                                 let untainted_ret_ty = TaintedType::from_llvm_type(&self.module.type_of(call));
-                                                let tainted_ret_ty = untainted_ret_ty.to_tainted();
+                                                let tainted_ret_ty = self.to_tainted(&untainted_ret_ty);
                                                 self.get_cur_fn().update_var_taintedtype(dest.clone(), tainted_ret_ty)
                                             },
                                         }
@@ -735,8 +742,10 @@ impl<'m> ModuleTaintState<'m> {
                 // called function to the worklist so that we can compute a better one
                 self.worklist.borrow_mut().add(funcname);
                 ventry.insert(FunctionSummary::new_untainted(
+                    &funcname,
                     call.arguments.iter().map(|(arg, _)| module.type_of(arg)),
                     &module.type_of(call),
+                    self.named_struct_defs.clone(),
                 ))
             },
         };
