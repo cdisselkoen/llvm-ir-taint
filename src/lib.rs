@@ -12,6 +12,7 @@ mod worklist;
 pub use config::Config;
 pub use tainted_type::TaintedType;
 pub use module_taint_result::ModuleTaintResult;
+pub use named_structs::NamedStructInitialDef;
 
 use itertools::Itertools;
 use llvm_ir::{Module, Name};
@@ -35,6 +36,7 @@ pub fn do_taint_analysis_on_function<'m>(
     start_fn_name: &str,
     args: Vec<TaintedType>,
     nonargs: HashMap<Name, TaintedType>,
+    named_structs: HashMap<String, NamedStructInitialDef>,
 ) -> ModuleTaintResult<'m> {
     let f = module.get_func_by_name(start_fn_name).unwrap_or_else(|| {
         panic!(
@@ -51,7 +53,7 @@ pub fn do_taint_analysis_on_function<'m>(
     {
         initial_taintmap.insert(name, ty);
     }
-    ModuleTaintState::do_analysis_single_function(module, config, &f.name, initial_taintmap)
+    ModuleTaintState::do_analysis_single_function(module, config, &f.name, initial_taintmap, named_structs)
         .into_module_taint_result()
 }
 
@@ -73,6 +75,7 @@ pub fn do_taint_analysis_on_module<'m>(
     config: &'m Config,
     args: HashMap<&'m str, Vec<TaintedType>>,
     nonargs: HashMap<&'m str, HashMap<Name, TaintedType>>,
+    named_structs: HashMap<String, NamedStructInitialDef>,
 ) -> ModuleTaintResult<'m> {
     let mut initial_fn_taint_maps = nonargs;
     for (funcname, argtypes) in args.into_iter() {
@@ -88,6 +91,6 @@ pub fn do_taint_analysis_on_module<'m>(
         }
     }
     let module_fns = module.functions.iter().map(|f| f.name.as_str());
-    ModuleTaintState::do_analysis_multiple_functions(module, config, module_fns, initial_fn_taint_maps)
+    ModuleTaintState::do_analysis_multiple_functions(module, config, module_fns, initial_fn_taint_maps, named_structs)
         .into_module_taint_result()
 }

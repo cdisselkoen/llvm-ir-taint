@@ -43,6 +43,7 @@ fn one_struct_element() {
         funcname,
         vec![TaintedType::TaintedValue],
         std::iter::once((Name::from(8), TaintedType::TaintedValue)).collect(),
+        HashMap::new(),
     );
     let taintmap = mtr.get_function_taint_map(funcname);
     assert_eq!(
@@ -67,6 +68,7 @@ fn two_struct_elements() {
         &config,
         funcname,
         vec![TaintedType::TaintedValue],
+        HashMap::new(),
         HashMap::new(),
     );
     let taintmap = mtr.get_function_taint_map(funcname);
@@ -101,6 +103,7 @@ fn zero_initialize() {
         &config,
         funcname,
         vec![TaintedType::TaintedValue],
+        HashMap::new(),
         HashMap::new(),
     );
     let taintmap = mtr.get_function_taint_map(funcname);
@@ -139,6 +142,7 @@ fn nested_struct() {
         "nested_first",
         vec![TaintedType::TaintedValue],
         HashMap::new(),
+        HashMap::new(),
     );
     let taintmap = mtr.get_function_taint_map("nested_first");
     assert_eq!(
@@ -154,6 +158,7 @@ fn nested_struct() {
         &config,
         "nested_all",
         vec![TaintedType::UntaintedValue, TaintedType::TaintedValue],
+        HashMap::new(),
         HashMap::new(),
     );
     let taintmap = mtr.get_function_taint_map("nested_all");
@@ -184,6 +189,7 @@ fn with_array() {
         &config,
         funcname,
         vec![TaintedType::TaintedValue],
+        HashMap::new(),
         HashMap::new(),
     );
     let taintmap = mtr.get_function_taint_map(funcname);
@@ -223,6 +229,7 @@ fn structptr() {
         "structptr",
         vec![TaintedType::TaintedValue],
         HashMap::new(),
+        HashMap::new(),
     );
     let taintmap = mtr.get_function_taint_map("structptr");
     assert_eq!(
@@ -235,6 +242,7 @@ fn structptr() {
         &config,
         "structelptr",
         vec![TaintedType::TaintedValue],
+        HashMap::new(),
         HashMap::new(),
     );
     let taintmap = mtr.get_function_taint_map("structelptr");
@@ -259,6 +267,7 @@ fn changeptr() {
         &config,
         funcname,
         vec![TaintedType::TaintedValue],
+        HashMap::new(),
         HashMap::new(),
     );
     let taintmap = mtr.get_function_taint_map(funcname);
@@ -294,6 +303,7 @@ fn with_ptr() {
         funcname,
         vec![TaintedType::TaintedValue],
         HashMap::new(),
+        HashMap::new(),
     );
     assert_eq!(
         mtr.get_named_struct_type("struct.TwoInts"),
@@ -328,7 +338,8 @@ fn addl_structtest() {
         &config,
         funcname,
         vec![TaintedType::TaintedValue],
-        HashMap::new()
+        HashMap::new(),
+        HashMap::new(),
     );
     assert_eq!(
         mtr.get_named_struct_type("struct.ThreeInts"),

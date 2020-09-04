@@ -28,6 +28,7 @@ fn while_loop() {
         funcname,
         vec![TaintedType::UntaintedValue],
         std::iter::once((Name::from(8), TaintedType::TaintedValue)).collect(),
+        HashMap::new(),
     );
     let taintmap = mtr.get_function_taint_map(funcname);
     assert_eq!(
@@ -51,6 +52,7 @@ fn for_loop() {
         funcname,
         vec![TaintedType::UntaintedValue],
         std::iter::once((Name::from(12), TaintedType::TaintedValue)).collect(),
+        HashMap::new(),
     );
     let taintmap = mtr.get_function_taint_map(funcname);
     assert_eq!(
@@ -75,6 +77,7 @@ fn loop_over_array() {
         funcname,
         vec![TaintedType::UntaintedValue],
         std::iter::once((Name::from(12), TaintedType::TaintedValue)).collect(),
+        HashMap::new(),
     );
     let taintmap = mtr.get_function_taint_map(funcname);
     assert_eq!(

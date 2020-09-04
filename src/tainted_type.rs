@@ -230,7 +230,10 @@ impl TaintedType {
     /// - if this pointer points to a struct/array/vector, we will taint all
     /// elements of that struct/array/vector
     /// - if this pointer points to another pointer P, we will taint P, but not
-    /// things pointed to by P.
+    /// things pointed to by P. Of course, if
+    /// `config.dereferencing_tainted_ptr_gives_tainted` is `true`, then things
+    /// pointed to by P will also become tainted if they are ever loaded through
+    /// P.
     ///
     /// This function panics if the pointer points to a named struct type. (It
     /// does work on array, vector, and anonymous struct types, as described
@@ -253,7 +256,10 @@ impl TaintedType {
     /// - if this pointer points to a struct/array/vector, we will taint all
     /// elements of that struct/array/vector
     /// - if this pointer points to another pointer P, we will taint P, but not
-    /// things pointed to by P.
+    /// things pointed to by P. Of course, if
+    /// `config.dereferencing_tainted_ptr_gives_tainted` is `true`, then things
+    /// pointed to by P will also become tainted if they are ever loaded through
+    /// P.
     ///
     /// This function handles all types, including named struct types.
     pub fn taint_contents<'m>(&self, named_structs: Rc<RefCell<NamedStructs<'m>>>, cur_fn: &'m str) {

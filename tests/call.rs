@@ -27,6 +27,7 @@ fn simple_call() {
         "simple_caller",
         vec![TaintedType::TaintedValue],
         HashMap::new(),
+        HashMap::new(),
     );
     let caller_taintmap = mtr.get_function_taint_map("simple_caller");
     let callee_taintmap = mtr.get_function_taint_map("simple_callee");
@@ -60,6 +61,7 @@ fn nested_call() {
         &config,
         "nested_caller",
         vec![TaintedType::TaintedValue, TaintedType::UntaintedValue],
+        HashMap::new(),
         HashMap::new(),
     );
     let nested_caller_taintmap = mtr.get_function_taint_map("nested_caller");
@@ -97,6 +99,7 @@ fn call_in_loop() {
         "caller_with_loop",
         vec![TaintedType::UntaintedValue],
         std::iter::once((Name::from(13), TaintedType::TaintedValue)).collect(),
+        HashMap::new(),
     );
     let caller_taintmap = mtr.get_function_taint_map("caller_with_loop");
     let callee_taintmap = mtr.get_function_taint_map("simple_callee");
@@ -137,6 +140,7 @@ fn recursive_call() {
         funcname,
         vec![TaintedType::UntaintedValue],
         std::iter::once((Name::from(2), TaintedType::TaintedValue)).collect(),
+        HashMap::new(),
     );
     let taintmap = mtr.get_function_taint_map(funcname);
     assert_eq!(
@@ -160,6 +164,7 @@ fn mutually_recursive_call() {
         funcname,
         vec![TaintedType::UntaintedValue],
         std::iter::once((Name::from(4), TaintedType::TaintedValue)).collect(),
+        HashMap::new(),
     );
     let taintmap = mtr.get_function_taint_map(funcname);
     assert_eq!(

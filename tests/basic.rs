@@ -34,6 +34,7 @@ fn basic_operation() {
         funcname,
         vec![TaintedType::TaintedValue, TaintedType::TaintedValue],
         HashMap::new(),
+        HashMap::new(),
     );
     let taintmap = mtr.get_function_taint_map(funcname);
     assert_eq!(
@@ -59,6 +60,7 @@ fn basic_operation() {
         &config,
         funcname,
         vec![TaintedType::UntaintedValue, TaintedType::UntaintedValue],
+        HashMap::new(),
         HashMap::new(),
     );
     let taintmap = mtr.get_function_taint_map(funcname);
@@ -86,6 +88,7 @@ fn basic_operation() {
         funcname,
         vec![TaintedType::TaintedValue, TaintedType::UntaintedValue],
         HashMap::new(),
+        HashMap::new(),
     );
     let taintmap = mtr.get_function_taint_map(funcname);
     assert_eq!(
@@ -111,6 +114,7 @@ fn basic_operation() {
         &config,
         funcname,
         vec![TaintedType::UntaintedValue, TaintedType::TaintedValue],
+        HashMap::new(),
         HashMap::new(),
     );
     let taintmap = mtr.get_function_taint_map(funcname);
@@ -146,6 +150,7 @@ fn binops() {
         funcname,
         vec![TaintedType::TaintedValue, TaintedType::TaintedValue],
         HashMap::new(),
+        HashMap::new(),
     );
     let taintmap = mtr.get_function_taint_map(funcname);
     assert_eq!(
@@ -208,6 +213,7 @@ fn binops() {
         funcname,
         vec![TaintedType::UntaintedValue, TaintedType::UntaintedValue],
         HashMap::new(),
+        HashMap::new(),
     );
     let taintmap = mtr.get_function_taint_map(funcname);
     assert_eq!(
@@ -269,6 +275,7 @@ fn binops() {
         &config,
         funcname,
         vec![TaintedType::UntaintedValue, TaintedType::TaintedValue],
+        HashMap::new(),
         HashMap::new(),
     );
     let taintmap = mtr.get_function_taint_map(funcname);
@@ -332,6 +339,7 @@ fn binops() {
         funcname,
         vec![TaintedType::UntaintedValue, TaintedType::UntaintedValue],
         std::iter::once((Name::from(8), TaintedType::TaintedValue)).collect(),
+        HashMap::new(),
     );
     let taintmap = mtr.get_function_taint_map(funcname);
     assert_eq!(
@@ -402,6 +410,7 @@ fn phi() {
         funcname,
         vec![TaintedType::UntaintedValue, TaintedType::UntaintedValue],
         HashMap::new(),
+        HashMap::new(),
     );
     let taintmap = mtr.get_function_taint_map(funcname);
     assert_eq!(
@@ -431,6 +440,7 @@ fn phi() {
         &config,
         funcname,
         vec![TaintedType::UntaintedValue, TaintedType::TaintedValue],
+        HashMap::new(),
         HashMap::new(),
     );
     let taintmap = mtr.get_function_taint_map(funcname);
@@ -473,6 +483,7 @@ fn load_and_store() {
             TaintedType::UntaintedValue,
         ],
         HashMap::new(),
+        HashMap::new(),
     );
     let taintmap = mtr.get_function_taint_map(funcname);
     assert_eq!(
@@ -501,6 +512,7 @@ fn load_and_store() {
             TaintedType::untainted_ptr_to(TaintedType::UntaintedValue),
             TaintedType::TaintedValue,
         ],
+        HashMap::new(),
         HashMap::new(),
     );
     let taintmap = mtr.get_function_taint_map(funcname);
@@ -536,6 +548,7 @@ fn alloca() {
         funcname,
         vec![TaintedType::UntaintedValue],
         HashMap::new(),
+        HashMap::new(),
     );
     let taintmap = mtr.get_function_taint_map(funcname);
     assert_eq!(
@@ -549,6 +562,7 @@ fn alloca() {
         &config,
         funcname,
         vec![TaintedType::TaintedValue],
+        HashMap::new(),
         HashMap::new(),
     );
     let taintmap = mtr.get_function_taint_map(funcname);
@@ -579,6 +593,7 @@ fn overwrite() {
             TaintedType::UntaintedValue,
         ],
         HashMap::new(),
+        HashMap::new(),
     );
     let taintmap = mtr.get_function_taint_map(funcname);
     assert_eq!(
@@ -595,6 +610,7 @@ fn overwrite() {
             TaintedType::untainted_ptr_to(TaintedType::UntaintedValue),
             TaintedType::TaintedValue,
         ],
+        HashMap::new(),
         HashMap::new(),
     );
     let taintmap = mtr.get_function_taint_map(funcname);
@@ -621,6 +637,7 @@ fn load_and_store_mult() {
             TaintedType::UntaintedValue,
         ],
         HashMap::new(),
+        HashMap::new(),
     );
     let taintmap = mtr.get_function_taint_map(funcname);
     assert_eq!(
@@ -637,6 +654,7 @@ fn load_and_store_mult() {
             TaintedType::untainted_ptr_to(TaintedType::UntaintedValue),
             TaintedType::TaintedValue,
         ],
+        HashMap::new(),
         HashMap::new(),
     );
     let taintmap = mtr.get_function_taint_map(funcname);
@@ -663,6 +681,7 @@ fn array() {
             TaintedType::UntaintedValue,
         ],
         HashMap::new(),
+        HashMap::new(),
     );
     let taintmap = mtr.get_function_taint_map(funcname);
     assert_eq!(
@@ -679,6 +698,7 @@ fn array() {
             TaintedType::untainted_ptr_to(TaintedType::UntaintedValue),
             TaintedType::TaintedValue,
         ],
+        HashMap::new(),
         HashMap::new(),
     );
     let taintmap = mtr.get_function_taint_map(funcname);
@@ -699,6 +719,7 @@ fn array() {
             TaintedType::UntaintedValue,
         ],
         std::iter::once((Name::from(5), TaintedType::TaintedValue)).collect(),
+        HashMap::new(),
     );
     let taintmap = mtr.get_function_taint_map(funcname);
     assert_eq!(

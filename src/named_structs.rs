@@ -1,6 +1,7 @@
 use crate::tainted_type::TaintedType;
 use llvm_ir::{Constant, ConstantRef, Module, Operand};
 use llvm_ir::types::NamedStructDef;
+use log::warn;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
@@ -21,10 +22,72 @@ pub struct NamedStructs<'m> {
     module: &'m Module,
 }
 
+/// Describes the initial definition (taint state) of a named struct.
+/// It may always become more tainted than this initial state during
+/// taint-tracking, but never less.
+pub enum NamedStructInitialDef {
+    /// All fields of this named struct begin untainted. This is the default
+    /// for all named structs unless otherwise specified.
+    AllFieldsUntainted,
+    /// All fields of this named struct begin tainted.
+    AllFieldsTainted,
+    /// Use this `TaintedType` (which must be a `TaintedType::Struct` variant)
+    /// as the initial definition for this named struct.
+    /// This must be compatible with the LLVM type of the struct.
+    InitialDef(TaintedType),
+}
+
 impl<'m> NamedStructs<'m> {
+    /// Construct a new `NamedStructs` with implicitly the default (untainted)
+    /// `TaintedType` for all named structs in the `Module`
     pub fn new(module: &'m Module) -> Self {
         Self {
             named_struct_types: HashMap::new(),
+            named_struct_users: HashMap::new(),
+            module,
+        }
+    }
+
+    /// Construct a new `NamedStructs`, with the given `NamedStructInitialDef`s
+    /// for some named structs in the `Module`. Structs not given in `defs` are
+    /// implicitly `NamedStructInitialDef::AllFieldsUntainted`.
+    pub fn with_initial_defs(module: &'m Module, defs: HashMap<String, NamedStructInitialDef>) -> Self {
+        use NamedStructInitialDef::*;
+        let mut named_struct_types: HashMap<String, TaintedType> = HashMap::new();
+        for (structname, initialdef) in defs.into_iter() {
+            match (initialdef, module.types.named_struct_def(&structname)) {
+                (_, None) => panic!("Struct name {:?} not found in the Module", structname),
+                (AllFieldsUntainted, _) => {},
+                (AllFieldsTainted, Some(NamedStructDef::Opaque)) => {
+                    warn!("NamedStructInitialDef::AllFieldsTainted on an opaque struct. Not adding a definition, but we shouldn't ever need a definition for an opaque struct, so this entry will be ignored.");
+                },
+                (AllFieldsTainted, Some(NamedStructDef::Defined(ty))) => {
+                    let tainted_ty = TaintedType::from_llvm_type(&ty).to_tainted_nonamedstruct();
+                    named_struct_types.insert(structname, tainted_ty);
+                },
+                (InitialDef(structty), Some(structdef)) => {
+                    match structty {
+                        TaintedType::Struct(_) => {},
+                        _ => panic!("Supplied initial type for struct {:?} should be a TaintedType::Struct variant, but got {:?}", structname, structty),
+                    }
+                    match structdef {
+                        NamedStructDef::Opaque => {
+                            named_struct_types.insert(structname, structty);
+                        },
+                        NamedStructDef::Defined(ty) => {
+                            match structty.join(&TaintedType::from_llvm_type(&ty)) {
+                                Ok(_) => {
+                                    named_struct_types.insert(structname, structty);
+                                },
+                                Err(e) => panic!("Supplied initial type for struct {:?} is incompatible with the LLVM type of that struct, as seen in the following join error:\n  {}", structname, e),
+                            }
+                        }
+                    }
+                },
+            }
+        }
+        Self {
+            named_struct_types,
             named_struct_users: HashMap::new(),
             module,
         }

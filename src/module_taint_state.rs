@@ -3,7 +3,7 @@ use crate::function_summary::FunctionSummary;
 use crate::function_taint_state::FunctionTaintState;
 use crate::globals::Globals;
 use crate::module_taint_result::ModuleTaintResult;
-use crate::named_structs::{Index, NamedStructs};
+use crate::named_structs::{Index, NamedStructs, NamedStructInitialDef};
 use crate::tainted_type::TaintedType;
 use crate::worklist::Worklist;
 use either::Either;
@@ -64,9 +64,10 @@ impl<'m> ModuleTaintState<'m> {
         config: &'m Config,
         start_fn: &'m str,
         start_fn_taint_map: HashMap<Name, TaintedType>,
+        named_structs: HashMap<String, NamedStructInitialDef>,
     ) -> Self {
         let fn_taint_maps = std::iter::once((start_fn.into(), start_fn_taint_map)).collect();
-        let mut mts = Self::new(module, config, std::iter::once(start_fn), fn_taint_maps);
+        let mut mts = Self::new(module, config, std::iter::once(start_fn), fn_taint_maps, named_structs);
         mts.compute();
         mts
     }
@@ -85,8 +86,9 @@ impl<'m> ModuleTaintState<'m> {
         config: &'m Config,
         start_fns: impl IntoIterator<Item = &'m str>,
         fn_taint_maps: HashMap<&'m str, HashMap<Name, TaintedType>>,
+        named_structs: HashMap<String, NamedStructInitialDef>,
     ) -> Self {
-        let mut mts = Self::new(module, config, start_fns, fn_taint_maps);
+        let mut mts = Self::new(module, config, start_fns, fn_taint_maps, named_structs);
         mts.compute();
         mts
     }
@@ -96,8 +98,9 @@ impl<'m> ModuleTaintState<'m> {
         config: &'m Config,
         start_fns: impl IntoIterator<Item = &'m str>,
         fn_taint_maps: HashMap<&'m str, HashMap<Name, TaintedType>>,
+        named_structs: HashMap<String, NamedStructInitialDef>,
     ) -> Self {
-        let named_structs = Rc::new(RefCell::new(NamedStructs::new(module)));
+        let named_structs = Rc::new(RefCell::new(NamedStructs::with_initial_defs(module, named_structs)));
         let globals = Rc::new(RefCell::new(Globals::new()));
         let worklist = Rc::new(RefCell::new(start_fns.into_iter().collect()));
         let fn_taint_states = fn_taint_maps

@@ -29,6 +29,7 @@ fn globals() {
         funcname,
         vec![TaintedType::TaintedValue],
         HashMap::new(),
+        HashMap::new(),
     );
     let taintmap = mtr.get_function_taint_map(funcname);
     assert_eq!(
