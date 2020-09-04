@@ -24,6 +24,8 @@ use std::collections::HashMap;
 /// and all functions it calls, directly or transitively.
 ///
 /// `args`: the `TaintedType` to assign to each argument of the start function.
+/// If this is not provided, all arguments (and everything they point to, etc)
+/// will be marked untainted.
 ///
 /// `nonargs`: (optional) Initial `TaintedType`s for any nonargument variables in
 /// the start function. For instance, you can use this to set some variable in
@@ -34,7 +36,7 @@ pub fn do_taint_analysis_on_function<'m>(
     module: &'m Module,
     config: &'m Config,
     start_fn_name: &str,
-    args: Vec<TaintedType>,
+    args: Option<Vec<TaintedType>>,
     nonargs: HashMap<Name, TaintedType>,
     named_structs: HashMap<String, NamedStructInitialDef>,
 ) -> ModuleTaintResult<'m> {
@@ -45,13 +47,15 @@ pub fn do_taint_analysis_on_function<'m>(
         )
     });
     let mut initial_taintmap = nonargs;
-    for (name, ty) in f
-        .parameters
-        .iter()
-        .map(|p| p.name.clone())
-        .zip_eq(args.into_iter())
-    {
-        initial_taintmap.insert(name, ty);
+    if let Some(args) = args {
+        for (name, ty) in f
+            .parameters
+            .iter()
+            .map(|p| p.name.clone())
+            .zip_eq(args.into_iter())
+        {
+            initial_taintmap.insert(name, ty);
+        }
     }
     ModuleTaintState::do_analysis_single_function(module, config, &f.name, initial_taintmap, named_structs)
         .into_module_taint_result()

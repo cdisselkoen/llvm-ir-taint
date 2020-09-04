@@ -32,7 +32,7 @@ fn basic_operation() {
         &module,
         &config,
         funcname,
-        vec![TaintedType::TaintedValue, TaintedType::TaintedValue],
+        Some(vec![TaintedType::TaintedValue, TaintedType::TaintedValue]),
         HashMap::new(),
         HashMap::new(),
     );
@@ -59,7 +59,7 @@ fn basic_operation() {
         &module,
         &config,
         funcname,
-        vec![TaintedType::UntaintedValue, TaintedType::UntaintedValue],
+        Some(vec![TaintedType::UntaintedValue, TaintedType::UntaintedValue]),
         HashMap::new(),
         HashMap::new(),
     );
@@ -86,7 +86,7 @@ fn basic_operation() {
         &module,
         &config,
         funcname,
-        vec![TaintedType::TaintedValue, TaintedType::UntaintedValue],
+        Some(vec![TaintedType::TaintedValue, TaintedType::UntaintedValue]),
         HashMap::new(),
         HashMap::new(),
     );
@@ -113,7 +113,7 @@ fn basic_operation() {
         &module,
         &config,
         funcname,
-        vec![TaintedType::UntaintedValue, TaintedType::TaintedValue],
+        Some(vec![TaintedType::UntaintedValue, TaintedType::TaintedValue]),
         HashMap::new(),
         HashMap::new(),
     );
@@ -148,7 +148,7 @@ fn binops() {
         &module,
         &config,
         funcname,
-        vec![TaintedType::TaintedValue, TaintedType::TaintedValue],
+        Some(vec![TaintedType::TaintedValue, TaintedType::TaintedValue]),
         HashMap::new(),
         HashMap::new(),
     );
@@ -211,7 +211,7 @@ fn binops() {
         &module,
         &config,
         funcname,
-        vec![TaintedType::UntaintedValue, TaintedType::UntaintedValue],
+        Some(vec![TaintedType::UntaintedValue, TaintedType::UntaintedValue]),
         HashMap::new(),
         HashMap::new(),
     );
@@ -274,7 +274,7 @@ fn binops() {
         &module,
         &config,
         funcname,
-        vec![TaintedType::UntaintedValue, TaintedType::TaintedValue],
+        Some(vec![TaintedType::UntaintedValue, TaintedType::TaintedValue]),
         HashMap::new(),
         HashMap::new(),
     );
@@ -337,7 +337,7 @@ fn binops() {
         &module,
         &config,
         funcname,
-        vec![TaintedType::UntaintedValue, TaintedType::UntaintedValue],
+        Some(vec![TaintedType::UntaintedValue, TaintedType::UntaintedValue]),
         std::iter::once((Name::from(8), TaintedType::TaintedValue)).collect(),
         HashMap::new(),
     );
@@ -408,7 +408,7 @@ fn phi() {
         &module,
         &config,
         funcname,
-        vec![TaintedType::UntaintedValue, TaintedType::UntaintedValue],
+        Some(vec![TaintedType::UntaintedValue, TaintedType::UntaintedValue]),
         HashMap::new(),
         HashMap::new(),
     );
@@ -439,7 +439,7 @@ fn phi() {
         &module,
         &config,
         funcname,
-        vec![TaintedType::UntaintedValue, TaintedType::TaintedValue],
+        Some(vec![TaintedType::UntaintedValue, TaintedType::TaintedValue]),
         HashMap::new(),
         HashMap::new(),
     );
@@ -478,10 +478,10 @@ fn load_and_store() {
         &module,
         &config,
         funcname,
-        vec![
+        Some(vec![
             TaintedType::untainted_ptr_to(TaintedType::UntaintedValue),
             TaintedType::UntaintedValue,
-        ],
+        ]),
         HashMap::new(),
         HashMap::new(),
     );
@@ -508,10 +508,10 @@ fn load_and_store() {
         &module,
         &config,
         funcname,
-        vec![
+        Some(vec![
             TaintedType::untainted_ptr_to(TaintedType::UntaintedValue),
             TaintedType::TaintedValue,
-        ],
+        ]),
         HashMap::new(),
         HashMap::new(),
     );
@@ -546,7 +546,7 @@ fn alloca() {
         &module,
         &config,
         funcname,
-        vec![TaintedType::UntaintedValue],
+        Some(vec![TaintedType::UntaintedValue]),
         HashMap::new(),
         HashMap::new(),
     );
@@ -561,7 +561,7 @@ fn alloca() {
         &module,
         &config,
         funcname,
-        vec![TaintedType::TaintedValue],
+        Some(vec![TaintedType::TaintedValue]),
         HashMap::new(),
         HashMap::new(),
     );
@@ -588,10 +588,10 @@ fn overwrite() {
         &module,
         &config,
         funcname,
-        vec![
+        Some(vec![
             TaintedType::untainted_ptr_to(TaintedType::UntaintedValue),
             TaintedType::UntaintedValue,
-        ],
+        ]),
         HashMap::new(),
         HashMap::new(),
     );
@@ -606,10 +606,10 @@ fn overwrite() {
         &module,
         &config,
         funcname,
-        vec![
+        Some(vec![
             TaintedType::untainted_ptr_to(TaintedType::UntaintedValue),
             TaintedType::TaintedValue,
-        ],
+        ]),
         HashMap::new(),
         HashMap::new(),
     );
@@ -632,10 +632,10 @@ fn load_and_store_mult() {
         &module,
         &config,
         funcname,
-        vec![
+        Some(vec![
             TaintedType::untainted_ptr_to(TaintedType::UntaintedValue),
             TaintedType::UntaintedValue,
-        ],
+        ]),
         HashMap::new(),
         HashMap::new(),
     );
@@ -650,10 +650,10 @@ fn load_and_store_mult() {
         &module,
         &config,
         funcname,
-        vec![
+        Some(vec![
             TaintedType::untainted_ptr_to(TaintedType::UntaintedValue),
             TaintedType::TaintedValue,
-        ],
+        ]),
         HashMap::new(),
         HashMap::new(),
     );
@@ -676,10 +676,10 @@ fn array() {
         &module,
         &config,
         funcname,
-        vec![
+        Some(vec![
             TaintedType::untainted_ptr_to(TaintedType::UntaintedValue),
             TaintedType::UntaintedValue,
-        ],
+        ]),
         HashMap::new(),
         HashMap::new(),
     );
@@ -694,10 +694,10 @@ fn array() {
         &module,
         &config,
         funcname,
-        vec![
+        Some(vec![
             TaintedType::untainted_ptr_to(TaintedType::UntaintedValue),
             TaintedType::TaintedValue,
-        ],
+        ]),
         HashMap::new(),
         HashMap::new(),
     );
@@ -714,10 +714,10 @@ fn array() {
         &module,
         &config,
         funcname,
-        vec![
+        Some(vec![
             TaintedType::untainted_ptr_to(TaintedType::UntaintedValue),
             TaintedType::UntaintedValue,
-        ],
+        ]),
         std::iter::once((Name::from(5), TaintedType::TaintedValue)).collect(),
         HashMap::new(),
     );

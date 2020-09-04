@@ -1,5 +1,6 @@
 use llvm_ir::{Module, Name};
 use llvm_ir_taint::*;
+use std::collections::HashMap;
 use std::path::Path;
 
 fn init_logging() {
@@ -26,7 +27,7 @@ fn while_loop() {
         &module,
         &config,
         funcname,
-        vec![TaintedType::UntaintedValue],
+        Some(vec![TaintedType::UntaintedValue]),
         std::iter::once((Name::from(8), TaintedType::TaintedValue)).collect(),
         HashMap::new(),
     );
@@ -50,7 +51,7 @@ fn for_loop() {
         &module,
         &config,
         funcname,
-        vec![TaintedType::UntaintedValue],
+        Some(vec![TaintedType::UntaintedValue]),
         std::iter::once((Name::from(12), TaintedType::TaintedValue)).collect(),
         HashMap::new(),
     );
@@ -75,7 +76,7 @@ fn loop_over_array() {
         &module,
         &config,
         funcname,
-        vec![TaintedType::UntaintedValue],
+        Some(vec![TaintedType::UntaintedValue]),
         std::iter::once((Name::from(12), TaintedType::TaintedValue)).collect(),
         HashMap::new(),
     );

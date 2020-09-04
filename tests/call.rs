@@ -25,7 +25,7 @@ fn simple_call() {
         &module,
         &config,
         "simple_caller",
-        vec![TaintedType::TaintedValue],
+        Some(vec![TaintedType::TaintedValue]),
         HashMap::new(),
         HashMap::new(),
     );
@@ -60,7 +60,7 @@ fn nested_call() {
         &module,
         &config,
         "nested_caller",
-        vec![TaintedType::TaintedValue, TaintedType::UntaintedValue],
+        Some(vec![TaintedType::TaintedValue, TaintedType::UntaintedValue]),
         HashMap::new(),
         HashMap::new(),
     );
@@ -97,7 +97,7 @@ fn call_in_loop() {
         &module,
         &config,
         "caller_with_loop",
-        vec![TaintedType::UntaintedValue],
+        Some(vec![TaintedType::UntaintedValue]),
         std::iter::once((Name::from(13), TaintedType::TaintedValue)).collect(),
         HashMap::new(),
     );
@@ -138,7 +138,7 @@ fn recursive_call() {
         &module,
         &config,
         funcname,
-        vec![TaintedType::UntaintedValue],
+        Some(vec![TaintedType::UntaintedValue]),
         std::iter::once((Name::from(2), TaintedType::TaintedValue)).collect(),
         HashMap::new(),
     );
@@ -162,7 +162,7 @@ fn mutually_recursive_call() {
         &module,
         &config,
         funcname,
-        vec![TaintedType::UntaintedValue],
+        Some(vec![TaintedType::UntaintedValue]),
         std::iter::once((Name::from(4), TaintedType::TaintedValue)).collect(),
         HashMap::new(),
     );

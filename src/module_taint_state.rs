@@ -56,9 +56,10 @@ impl<'m> ModuleTaintState<'m> {
     /// `start_fn`: name of the function to start the analysis in
     ///
     /// `start_fn_taint_map`: Map from variable names (in `start_fn`) to the
-    /// initial `TaintedType`s of those variables. Must include types for the
-    /// function parameters; may optionally include types for other variables in
-    /// the function.
+    /// initial `TaintedType`s of those variables. May include types for function
+    /// arguments and/or other variables in the function. Any variable not
+    /// included in this map will simply be inferred normally from the other
+    /// variables (defaulting to untainted).
     pub fn do_analysis_single_function(
         module: &'m Module,
         config: &'m Config,
@@ -310,6 +311,20 @@ impl<'m> ModuleTaintState<'m> {
             // If a change here causes any change to the status of
             // non-parameter variables, that will result in returning
             // `true` below.
+        }
+        // and also update the current summary from the function parameter types
+        let taint_map = cur_fn.get_taint_map();
+        let param_tainted_types = f.parameters
+            .iter()
+            .map(|p| taint_map.get(&p.name).cloned().expect("just inserted these, so they should exist"))
+            .collect();
+        if summary.update_params(param_tainted_types)? {
+            // summary changed: put all callers of this function on the worklist
+            if let Some(callers) = self.callers.get(self.cur_fn) {
+                for caller in callers {
+                    self.worklist.borrow_mut().add(caller);
+                }
+            }
         }
 
         // now do a pass over the function to propagate taints

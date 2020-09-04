@@ -41,7 +41,7 @@ fn one_struct_element() {
         &module,
         &config,
         funcname,
-        vec![TaintedType::TaintedValue],
+        Some(vec![TaintedType::TaintedValue]),
         std::iter::once((Name::from(8), TaintedType::TaintedValue)).collect(),
         HashMap::new(),
     );
@@ -67,7 +67,7 @@ fn two_struct_elements() {
         &module,
         &config,
         funcname,
-        vec![TaintedType::TaintedValue],
+        Some(vec![TaintedType::TaintedValue]),
         HashMap::new(),
         HashMap::new(),
     );
@@ -102,7 +102,7 @@ fn zero_initialize() {
         &module,
         &config,
         funcname,
-        vec![TaintedType::TaintedValue],
+        Some(vec![TaintedType::TaintedValue]),
         HashMap::new(),
         HashMap::new(),
     );
@@ -140,7 +140,7 @@ fn nested_struct() {
         &module,
         &config,
         "nested_first",
-        vec![TaintedType::TaintedValue],
+        Some(vec![TaintedType::TaintedValue]),
         HashMap::new(),
         HashMap::new(),
     );
@@ -157,7 +157,7 @@ fn nested_struct() {
         &module,
         &config,
         "nested_all",
-        vec![TaintedType::UntaintedValue, TaintedType::TaintedValue],
+        Some(vec![TaintedType::UntaintedValue, TaintedType::TaintedValue]),
         HashMap::new(),
         HashMap::new(),
     );
@@ -188,7 +188,7 @@ fn with_array() {
         &module,
         &config,
         funcname,
-        vec![TaintedType::TaintedValue],
+        Some(vec![TaintedType::TaintedValue]),
         HashMap::new(),
         HashMap::new(),
     );
@@ -227,7 +227,7 @@ fn structptr() {
         &module,
         &config,
         "structptr",
-        vec![TaintedType::TaintedValue],
+        Some(vec![TaintedType::TaintedValue]),
         HashMap::new(),
         HashMap::new(),
     );
@@ -241,7 +241,7 @@ fn structptr() {
         &module,
         &config,
         "structelptr",
-        vec![TaintedType::TaintedValue],
+        Some(vec![TaintedType::TaintedValue]),
         HashMap::new(),
         HashMap::new(),
     );
@@ -266,7 +266,7 @@ fn changeptr() {
         &module,
         &config,
         funcname,
-        vec![TaintedType::TaintedValue],
+        Some(vec![TaintedType::TaintedValue]),
         HashMap::new(),
         HashMap::new(),
     );
@@ -301,7 +301,7 @@ fn with_ptr() {
         &module,
         &config,
         funcname,
-        vec![TaintedType::TaintedValue],
+        Some(vec![TaintedType::TaintedValue]),
         HashMap::new(),
         HashMap::new(),
     );
@@ -337,7 +337,7 @@ fn addl_structtest() {
         &module,
         &config,
         funcname,
-        vec![TaintedType::TaintedValue],
+        Some(vec![TaintedType::TaintedValue]),
         HashMap::new(),
         HashMap::new(),
     );

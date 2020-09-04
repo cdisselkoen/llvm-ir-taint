@@ -27,7 +27,7 @@ fn globals() {
         &module,
         &config,
         funcname,
-        vec![TaintedType::TaintedValue],
+        Some(vec![TaintedType::TaintedValue]),
         HashMap::new(),
         HashMap::new(),
     );
