@@ -1,5 +1,5 @@
 use crate::function_taint_state::FunctionTaintState;
-use crate::named_structs::NamedStructs;
+use crate::named_structs::{NamedStructs, TaintedNamedStructs};
 use crate::tainted_type::TaintedType;
 use llvm_ir::Name;
 use std::cell::{Ref, RefCell};
@@ -167,31 +167,14 @@ impl Pointee {
 
     /// Mark the pointed-to contents as tainted.
     ///
-    /// This function panics if the pointed-to contents are a named struct type.
-    /// (It does work on array, vector, and anonymous struct types, as long as
-    /// the element type isn't a named struct type.)
-    ///
     /// Returns `true` if the contents' `TaintedType` changed.
-    pub(crate) fn taint_nonamedstruct(&self) -> bool {
-        let mut pointee_ty = self.ty.borrow_mut();
-        let tainted_ty = pointee_ty.to_tainted_nonamedstruct();
-        if &*pointee_ty == &tainted_ty {
-            // no change is necessary
-            false
-        } else {
-            // update the type.
-            // See notes on and inside `update()`
-            *pointee_ty = tainted_ty;
-            true
-        }
+    pub(crate) fn taint<'m>(&self, named_structs: &mut NamedStructs<'m>) -> bool {
+        self.taint_with_tns(&mut named_structs.tainted_named_structs)
     }
 
-    /// Mark the pointed-to contents as tainted.
-    ///
-    /// This function handles all types, including named struct types.
-    pub(crate) fn taint<'m>(&self, named_structs: Rc<RefCell<NamedStructs<'m>>>, cur_fn: &'m str) -> bool {
+    pub(crate) fn taint_with_tns<'m>(&self, tns: &mut TaintedNamedStructs) -> bool {
         let mut pointee_ty = self.ty.borrow_mut();
-        let tainted_ty = pointee_ty.to_tainted(named_structs, cur_fn);
+        let tainted_ty = tns.to_tainted(&pointee_ty);
         if &*pointee_ty == &tainted_ty {
             // no change is necessary
             false

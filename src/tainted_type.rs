@@ -159,71 +159,6 @@ impl TaintedType {
         }
     }
 
-    /// Convert this (tainted or untainted) type to the equivalent tainted type.
-    ///
-    /// This function panics on named struct types. (It does work on array,
-    /// vector, and anonymous struct types, as long as the element type isn't a
-    /// named struct type.)
-    ///
-    /// For a more generic function that works on all types, use
-    /// `TaintedType::to_tainted()` (below) or
-    /// `ModuleTaintState::to_tainted()`.
-    pub fn to_tainted_nonamedstruct(&self) -> Self {
-        match self {
-            TaintedType::UntaintedValue => TaintedType::TaintedValue,
-            TaintedType::TaintedValue => TaintedType::TaintedValue,
-            TaintedType::UntaintedPointer(pointee) => TaintedType::TaintedPointer(pointee.clone()),
-            TaintedType::TaintedPointer(pointee) => TaintedType::TaintedPointer(pointee.clone()),
-            TaintedType::ArrayOrVector(pointee) => {
-                pointee.taint_nonamedstruct();
-                TaintedType::ArrayOrVector(pointee.clone())
-            },
-            TaintedType::Struct(elements) => {
-                for element in elements {
-                    element.taint_nonamedstruct();
-                }
-                TaintedType::struct_of_pointees(elements.clone())
-            },
-            TaintedType::NamedStruct(_) => panic!("to_tainted_nonamedstruct on a named struct"),
-            TaintedType::UntaintedFnPtr => TaintedType::TaintedFnPtr,
-            TaintedType::TaintedFnPtr => TaintedType::TaintedFnPtr,
-        }
-    }
-
-    /// Convert this (tainted or untainted) type to the equivalent tainted type.
-    ///
-    /// This function handles all types, including named struct types.
-    ///
-    /// Alternately you can also use `ModuleTaintState::to_tainted()`.
-    pub fn to_tainted<'m>(&self, named_structs: Rc<RefCell<NamedStructs<'m>>>, cur_fn: &'m str) -> Self {
-        match self {
-            TaintedType::NamedStruct(name) => {
-                let mut named_structs_ref = named_structs.borrow_mut();
-                let structty = named_structs_ref.get_named_struct_type(name.clone(), cur_fn);
-                match structty {
-                    TaintedType::Struct(elements) => {
-                        for element in elements {
-                            element.taint(named_structs.clone(), cur_fn);
-                        }
-                        TaintedType::NamedStruct(name.clone())
-                    },
-                    _ => panic!("Expected get_named_struct_type to return TaintedType::Struct"),
-                }
-            },
-            TaintedType::ArrayOrVector(pointee) => {
-                pointee.taint(named_structs, cur_fn);
-                TaintedType::ArrayOrVector(pointee.clone())
-            }
-            TaintedType::Struct(elements) => {
-                for element in elements {
-                    element.taint(named_structs.clone(), cur_fn);
-                }
-                TaintedType::struct_of_pointees(elements.clone())
-            }
-            _ => self.to_tainted_nonamedstruct(),
-        }
-    }
-
     /// Mark everything pointed to by this pointer as tainted.
     ///
     /// Recurses into structs/arrays/vectors, but not pointers:
@@ -234,38 +169,10 @@ impl TaintedType {
     /// `config.dereferencing_tainted_ptr_gives_tainted` is `true`, then things
     /// pointed to by P will also become tainted if they are ever loaded through
     /// P.
-    ///
-    /// This function panics if the pointer points to a named struct type. (It
-    /// does work on array, vector, and anonymous struct types, as described
-    /// above.)
-    pub fn taint_contents_nonamedstruct(&self) {
+    pub fn taint_contents<'m>(&self, named_structs: &mut NamedStructs<'m>) {
         match self {
             TaintedType::UntaintedPointer(pointee) | TaintedType::TaintedPointer(pointee) => {
-                pointee.taint_nonamedstruct();
-            },
-            TaintedType::UntaintedFnPtr | TaintedType::TaintedFnPtr => {
-                panic!("taint_contents on a function pointer")
-            },
-            _ => panic!("taint_contents: not a pointer: {:?}", self),
-        }
-    }
-
-    /// Mark everything pointed to by this pointer as tainted.
-    ///
-    /// Recurses into structs/arrays/vectors, but not pointers:
-    /// - if this pointer points to a struct/array/vector, we will taint all
-    /// elements of that struct/array/vector
-    /// - if this pointer points to another pointer P, we will taint P, but not
-    /// things pointed to by P. Of course, if
-    /// `config.dereferencing_tainted_ptr_gives_tainted` is `true`, then things
-    /// pointed to by P will also become tainted if they are ever loaded through
-    /// P.
-    ///
-    /// This function handles all types, including named struct types.
-    pub fn taint_contents<'m>(&self, named_structs: Rc<RefCell<NamedStructs<'m>>>, cur_fn: &'m str) {
-        match self {
-            TaintedType::UntaintedPointer(pointee) | TaintedType::TaintedPointer(pointee) => {
-                pointee.taint(named_structs, cur_fn);
+                pointee.taint(named_structs);
             },
             TaintedType::UntaintedFnPtr | TaintedType::TaintedFnPtr => {
                 panic!("taint_contents on a function pointer")

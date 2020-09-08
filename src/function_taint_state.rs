@@ -169,7 +169,7 @@ impl<'m> FunctionTaintState<'m> {
                 let int_type = self.get_type_of_constant(&itp.operand)?;
                 let ptr_type = TaintedType::from_llvm_type(&self.module.type_of(itp));
                 if int_type.is_tainted_nonamedstruct() {
-                    Ok(ptr_type.to_tainted(Rc::clone(&self.named_structs), self.name))
+                    Ok(self.named_structs.borrow_mut().to_tainted(&ptr_type))
                 } else {
                     Ok(ptr_type)
                 }
@@ -178,7 +178,7 @@ impl<'m> FunctionTaintState<'m> {
                 let ptr_type = self.get_type_of_constant(&pti.operand)?;
                 let int_type = TaintedType::from_llvm_type(&self.module.type_of(pti));
                 if ptr_type.is_tainted(Rc::clone(&self.named_structs), self.name) {
-                    Ok(int_type.to_tainted_nonamedstruct())
+                    Ok(self.named_structs.borrow_mut().to_tainted(&int_type))
                 } else {
                     Ok(int_type)
                 }

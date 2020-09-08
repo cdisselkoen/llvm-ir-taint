@@ -11,6 +11,13 @@ pub struct NamedStructs<'m> {
     /// that struct's contents.
     named_struct_types: HashMap<String, TaintedType>,
 
+    /// Overriding the `named_struct_types` above, the following named structs
+    /// are considered to have all their fields tainted.
+    ///
+    /// Doing this lazily avoids infinite recursion if two named structs refer
+    /// to each other.
+    pub(crate) tainted_named_structs: TaintedNamedStructs,
+
     /// Map from the name of a named struct, to the names of functions that use
     /// that named struct.
     /// Whenever the type of a named struct changes, we add all of the functions
@@ -37,12 +44,59 @@ pub enum NamedStructInitialDef {
     InitialDef(TaintedType),
 }
 
+#[derive(Clone)]
+pub(crate) struct TaintedNamedStructs(HashSet<String>);
+
+impl TaintedNamedStructs {
+    fn insert(&mut self, struct_name: String) {
+        self.0.insert(struct_name);
+    }
+
+    fn contains(&self, struct_name: impl AsRef<str>) -> bool {
+        self.0.contains(struct_name.as_ref())
+    }
+
+    fn remove(&mut self, struct_name: impl AsRef<str>) {
+        self.0.remove(struct_name.as_ref());
+    }
+
+    /// Convert this (tainted or untainted) type to the equivalent tainted type.
+    ///
+    /// This may have side effects, such as permanently marking struct fields or
+    /// pointees as tainted.
+    pub(crate) fn to_tainted(&mut self, ty: &TaintedType) -> TaintedType {
+        match ty {
+            TaintedType::UntaintedValue => TaintedType::TaintedValue,
+            TaintedType::TaintedValue => TaintedType::TaintedValue,
+            TaintedType::UntaintedPointer(pointee) => TaintedType::TaintedPointer(pointee.clone()),
+            TaintedType::TaintedPointer(pointee) => TaintedType::TaintedPointer(pointee.clone()),
+            TaintedType::UntaintedFnPtr => TaintedType::TaintedFnPtr,
+            TaintedType::TaintedFnPtr => TaintedType::TaintedFnPtr,
+            TaintedType::NamedStruct(name) => {
+                self.0.insert(name.clone());
+                TaintedType::NamedStruct(name.clone())
+            }
+            TaintedType::ArrayOrVector(pointee) => {
+                pointee.taint_with_tns(self);
+                TaintedType::ArrayOrVector(pointee.clone())
+            }
+            TaintedType::Struct(elements) => {
+                for element in elements {
+                    element.taint_with_tns(self);
+                }
+                TaintedType::struct_of_pointees(elements.clone())
+            }
+        }
+    }
+}
+
 impl<'m> NamedStructs<'m> {
     /// Construct a new `NamedStructs` with implicitly the default (untainted)
     /// `TaintedType` for all named structs in the `Module`
     pub fn new(module: &'m Module) -> Self {
         Self {
             named_struct_types: HashMap::new(),
+            tainted_named_structs: TaintedNamedStructs(HashSet::new()),
             named_struct_users: HashMap::new(),
             module,
         }
@@ -54,6 +108,7 @@ impl<'m> NamedStructs<'m> {
     pub fn with_initial_defs(module: &'m Module, defs: HashMap<String, NamedStructInitialDef>) -> Self {
         use NamedStructInitialDef::*;
         let mut named_struct_types: HashMap<String, TaintedType> = HashMap::new();
+        let mut tainted_named_structs = TaintedNamedStructs(HashSet::new());
         for (structname, initialdef) in defs.into_iter() {
             match (initialdef, module.types.named_struct_def(&structname)) {
                 (_, None) => panic!("Struct name {:?} not found in the Module", structname),
@@ -61,9 +116,8 @@ impl<'m> NamedStructs<'m> {
                 (AllFieldsTainted, Some(NamedStructDef::Opaque)) => {
                     warn!("NamedStructInitialDef::AllFieldsTainted on an opaque struct. Not adding a definition, but we shouldn't ever need a definition for an opaque struct, so this entry will be ignored.");
                 },
-                (AllFieldsTainted, Some(NamedStructDef::Defined(ty))) => {
-                    let tainted_ty = TaintedType::from_llvm_type(&ty).to_tainted_nonamedstruct();
-                    named_struct_types.insert(structname, tainted_ty);
+                (AllFieldsTainted, Some(NamedStructDef::Defined(_))) => {
+                    tainted_named_structs.insert(structname);
                 },
                 (InitialDef(structty), Some(structdef)) => {
                     match structty {
@@ -88,6 +142,7 @@ impl<'m> NamedStructs<'m> {
         }
         Self {
             named_struct_types,
+            tainted_named_structs,
             named_struct_users: HashMap::new(),
             module,
         }
@@ -106,7 +161,7 @@ impl<'m> NamedStructs<'m> {
     pub fn get_named_struct_type(&mut self, struct_name: String, cur_fn: &'m str) -> &TaintedType {
         let module = self.module; // this is for the borrow checker - allows us to access `module` without needing to borrow `self`
         self.named_struct_users.entry(struct_name.clone()).or_default().insert(cur_fn.into());
-        self.named_struct_types.entry(struct_name.clone()).or_insert_with(|| {
+        let def = self.named_struct_types.entry(struct_name.clone()).or_insert_with(|| {
             match module.types.named_struct_def(&struct_name) {
                 None => panic!("get_named_struct_type on unknown named struct: name {:?}", &struct_name),
                 Some(NamedStructDef::Opaque) => panic!(
@@ -115,7 +170,14 @@ impl<'m> NamedStructs<'m> {
                 ),
                 Some(NamedStructDef::Defined(ty)) => TaintedType::from_llvm_type(&ty),
             }
-        })
+        });
+        if self.tainted_named_structs.contains(&struct_name) {
+            *def = self.tainted_named_structs.to_tainted(def);
+            // now that we've tainted the definition in `named_struct_types`, we
+            // don't need this in `tainted_named_structs` anymore
+            self.tainted_named_structs.remove(&struct_name);
+        }
+        def
     }
 
     /// Get the names of the functions which are currently known to use the named
@@ -146,6 +208,16 @@ impl<'m> NamedStructs<'m> {
             TaintedType::UntaintedFnPtr => false,
             TaintedType::TaintedFnPtr => true,
         }
+    }
+
+    /// Convert this (tainted or untainted) type to the equivalent tainted type.
+    ///
+    /// This may have side effects, such as permanently marking struct fields or
+    /// pointees as tainted.
+    ///
+    /// Alternately you can also use `ModuleTaintState::to_tainted()`.
+    pub fn to_tainted(&mut self, ty: &TaintedType) -> TaintedType {
+        self.tainted_named_structs.to_tainted(ty)
     }
 
     pub(crate) fn get_element_ptr<'a, 'b, I: Index + 'b>(

@@ -5,9 +5,6 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 pub struct FunctionSummary<'m> {
-    /// Name of the function
-    name: &'m str,
-
     /// `TaintedType`s of the function parameters
     params: Vec<TaintedType>,
 
@@ -20,13 +17,11 @@ pub struct FunctionSummary<'m> {
 
 impl<'m> FunctionSummary<'m> {
     pub fn new_untainted(
-        name: &'m str,
         param_llvm_types: impl IntoIterator<Item = TypeRef>,
         ret_llvm_type: &Type,
         named_structs: Rc<RefCell<NamedStructs<'m>>>,
     ) -> Self {
         Self {
-            name,
             params: param_llvm_types
                 .into_iter()
                 .map(|ty| TaintedType::from_llvm_type(&ty))
@@ -103,7 +98,7 @@ impl<'m> FunctionSummary<'m> {
         match &mut self.ret {
             None => false,
             Some(ret) => {
-                let tainted = ret.to_tainted(self.named_structs.clone(), self.name);
+                let tainted = self.named_structs.borrow_mut().to_tainted(ret);
                 if ret == &tainted {
                     false
                 } else {

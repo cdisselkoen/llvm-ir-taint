@@ -250,8 +250,11 @@ impl<'m> ModuleTaintState<'m> {
     }
 
     /// Convert this (tainted or untainted) type to the equivalent tainted type.
+    ///
+    /// This may have side effects, such as permanently marking struct fields or
+    /// pointees as tainted.
     pub fn to_tainted(&self, ty: &TaintedType) -> TaintedType {
-        ty.to_tainted(Rc::clone(&self.named_structs), self.cur_fn)
+        self.named_structs.borrow_mut().to_tainted(ty)
     }
 
     /// Process the given `Function`.
@@ -291,7 +294,6 @@ impl<'m> ModuleTaintState<'m> {
                 let param_llvm_types = f.parameters.iter().map(|p| module.type_of(p));
                 let ret_llvm_type = &f.return_type;
                 ventry.insert(FunctionSummary::new_untainted(
-                    &f.name,
                     param_llvm_types,
                     ret_llvm_type,
                     Rc::clone(&self.named_structs),
@@ -517,7 +519,7 @@ impl<'m> ModuleTaintState<'m> {
                         },
                         TaintedType::TaintedPointer(pointee) => {
                             if self.config.dereferencing_tainted_ptr_gives_tainted {
-                                pointee.taint(Rc::clone(&self.named_structs), self.cur_fn);
+                                pointee.taint(&mut self.named_structs.borrow_mut());
                             }
                             pointee.ty().clone()
                         },
@@ -760,7 +762,6 @@ impl<'m> ModuleTaintState<'m> {
                 // called function to the worklist so that we can compute a better one
                 self.worklist.borrow_mut().add(funcname);
                 ventry.insert(FunctionSummary::new_untainted(
-                    &funcname,
                     call.arguments.iter().map(|(arg, _)| module.type_of(arg)),
                     &module.type_of(call),
                     Rc::clone(&self.named_structs),
