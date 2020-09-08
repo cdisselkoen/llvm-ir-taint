@@ -10,7 +10,7 @@ use either::Either;
 use itertools::Itertools;
 use llvm_ir::instruction::{groups, BinaryOp, HasResult, UnaryOp};
 use llvm_ir::*;
-use log::{debug, warn};
+use log::debug;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::collections::hash_map::Entry;
@@ -536,8 +536,7 @@ impl<'m> ModuleTaintState<'m> {
                             ))
                         },
                         TaintedType::UntaintedFnPtr | TaintedType::TaintedFnPtr => {
-                            warn!("Store to a function pointer will be ignored");
-                            Ok(false)
+                            Err("Storing to a function pointer".into())
                         },
                         TaintedType::ArrayOrVector(_)
                         | TaintedType::Struct(_)
@@ -553,13 +552,7 @@ impl<'m> ModuleTaintState<'m> {
                             // e.g., if we're storing a tainted value, we want
                             // to update the address type to "pointer to tainted"
                             let new_value_type = cur_fn.get_type_of_operand(&store.value)?;
-                            match new_value_type {
-                                TaintedType::UntaintedFnPtr | TaintedType::TaintedFnPtr => {
-                                    warn!("Store to a function pointer will be ignored");
-                                    Ok(false)
-                                },
-                                _ => cur_fn.update_pointee_taintedtype(&mut pointee, new_value_type),
-                            }
+                            cur_fn.update_pointee_taintedtype(&mut pointee, new_value_type)
                         },
                     }
                 },
