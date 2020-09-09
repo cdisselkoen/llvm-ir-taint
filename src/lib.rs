@@ -11,6 +11,7 @@ mod worklist;
 
 pub use config::Config;
 pub use tainted_type::TaintedType;
+pub use pointee::Pointee;
 pub use module_taint_result::ModuleTaintResult;
 pub use named_structs::NamedStructInitialDef;
 

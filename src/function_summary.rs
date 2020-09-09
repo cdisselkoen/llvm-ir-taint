@@ -75,7 +75,7 @@ impl<'m> FunctionSummary<'m> {
     pub fn update_ret(&mut self, new_ret: &Option<&TaintedType>) -> Result<bool, String> {
         match new_ret {
             None => match &self.ret {
-                Some(ret) => Err(format!("update_ret: trying to update function from non-void to void. Old return type: {:?}", ret)),
+                Some(ret) => Err(format!("update_ret: trying to update function from non-void to void. Old return type: {}", ret)),
                 None => Ok(false),
             },
             Some(new_ret) => {

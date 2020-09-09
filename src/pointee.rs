@@ -3,6 +3,7 @@ use crate::named_structs::{NamedStructs, TaintedNamedStructs};
 use crate::tainted_type::TaintedType;
 use llvm_ir::Name;
 use std::cell::{Ref, RefCell};
+use std::fmt;
 use std::rc::Rc;
 
 /// A `Pointee` represents the `TaintedType` which a pointer points to.
@@ -184,5 +185,11 @@ impl Pointee {
             *pointee_ty = tainted_ty;
             true
         }
+    }
+}
+
+impl fmt::Display for Pointee {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.ty())
     }
 }

@@ -461,7 +461,7 @@ impl<'m> ModuleTaintState<'m> {
                     let element_ptr_ty = self.get_element_ptr(&ptr_to_struct, &ev.indices)?;
                     let element_ty = match element_ptr_ty {
                         TaintedType::UntaintedPointer(pointee) => pointee.ty().clone(),
-                        _ => return Err("ExtractValue: expected get_element_ptr to return an UntaintedPointer here".into()),
+                        _ => return Err(format!("ExtractValue: expected get_element_ptr to return an UntaintedPointer here; got {}", element_ptr_ty)),
                     };
                     self.get_cur_fn().update_var_taintedtype(ev.get_result().clone(), element_ty)
                 },
@@ -614,7 +614,7 @@ impl<'m> ModuleTaintState<'m> {
                                     let value_ty = cur_fn.get_type_of_operand(value_operand)?;
                                     let mut pointee = match address_ty {
                                         TaintedType::UntaintedPointer(pointee) | TaintedType::TaintedPointer(pointee) => pointee,
-                                        _ => return Err(format!("llvm.memset: expected first argument to be a pointer, but it was {:?}", address_ty)),
+                                        _ => return Err(format!("llvm.memset: expected first argument to be a pointer, but it was {}", address_ty)),
                                     };
                                     cur_fn.update_pointee_taintedtype(&mut pointee, &value_ty)
                                 } else {
@@ -699,7 +699,7 @@ impl<'m> ModuleTaintState<'m> {
         match addr {
             TaintedType::UntaintedValue | TaintedType::TaintedValue => {
                 Err(format!(
-                    "Load: address is not a pointer: got type {:?}",
+                    "Load: address is not a pointer: got type {}",
                     addr
                 ))
             },
@@ -710,7 +710,7 @@ impl<'m> ModuleTaintState<'m> {
             | TaintedType::Struct(_)
             | TaintedType::NamedStruct(_) => {
                 Err(format!(
-                    "Load: address is not a pointer: got type {:?}",
+                    "Load: address is not a pointer: got type {}",
                     addr
                 ))
             },
@@ -731,7 +731,7 @@ impl<'m> ModuleTaintState<'m> {
         match addr {
             TaintedType::UntaintedValue | TaintedType::TaintedValue => {
                 Err(format!(
-                    "Store: address is not a pointer: got type {:?}",
+                    "Store: address is not a pointer: got type {}",
                     addr
                 ))
             },
@@ -742,7 +742,7 @@ impl<'m> ModuleTaintState<'m> {
             | TaintedType::Struct(_)
             | TaintedType::NamedStruct(_) => {
                 Err(format!(
-                    "Store: address is not a pointer: got type {:?}",
+                    "Store: address is not a pointer: got type {}",
                     addr
                 ))
             },

@@ -2,6 +2,7 @@ use crate::named_structs::NamedStructs;
 use crate::pointee::Pointee;
 use llvm_ir::Type;
 use std::cell::RefCell;
+use std::fmt;
 use std::rc::Rc;
 
 /// The type system which we use for taint-tracking
@@ -177,7 +178,7 @@ impl TaintedType {
             TaintedType::UntaintedFnPtr | TaintedType::TaintedFnPtr => {
                 panic!("taint_contents on a function pointer")
             },
-            _ => panic!("taint_contents: not a pointer: {:?}", self),
+            _ => panic!("taint_contents: not a pointer: {}", self),
         }
     }
 
@@ -232,14 +233,44 @@ impl TaintedType {
                 if name1 == name2 {
                     Ok(Self::NamedStruct(name1.clone()))
                 } else {
-                    Err(format!("join: type mismatch: struct named {:?} with struct named {:?}", name1, name2))
+                    Err(format!("join: type mismatch: struct named {:?} vs. struct named {:?}", name1, name2))
                 }
             },
             (UntaintedFnPtr, UntaintedFnPtr) => Ok(UntaintedFnPtr),
             (UntaintedFnPtr, TaintedFnPtr) => Ok(TaintedFnPtr),
             (TaintedFnPtr, UntaintedFnPtr) => Ok(TaintedFnPtr),
             (TaintedFnPtr, TaintedFnPtr) => Ok(TaintedFnPtr),
-            _ => Err(format!("join: type mismatch: {:?} vs. {:?}", self, other)),
+            _ => Err(format!("join: type mismatch: {} vs. {}", self, other)),
+        }
+    }
+}
+
+impl fmt::Display for TaintedType {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            TaintedType::UntaintedValue => write!(f, "UntaintedValue"),
+            TaintedType::TaintedValue => write!(f, "TaintedValue"),
+            TaintedType::UntaintedFnPtr => write!(f, "UntaintedFnPtr"),
+            TaintedType::TaintedFnPtr => write!(f, "TaintedFnPtr"),
+            TaintedType::UntaintedPointer(p) => {
+                write!(f, "(UntaintedPointer to {})", p)
+            },
+            TaintedType::TaintedPointer(p) => {
+                write!(f, "(TaintedPointer to {})", p)
+            },
+            TaintedType::ArrayOrVector(p) => {
+                write!(f, "(ArrayOrVector of {})", p)
+            },
+            TaintedType::Struct(elements) => {
+                write!(f, "(Struct of {{")?;
+                for element in elements {
+                    write!(f, "{}, ", element)?;
+                }
+                write!(f, "}})")
+            }
+            TaintedType::NamedStruct(name) => {
+                write!(f, "(NamedStruct with name {:?})", name)
+            }
         }
     }
 }
