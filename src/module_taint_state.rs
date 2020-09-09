@@ -384,51 +384,44 @@ impl<'m> ModuleTaintState<'m> {
                 Instruction::BitCast(bc) => {
                     let cur_fn = self.get_cur_fn();
                     let from_ty = cur_fn.get_type_of_operand(&bc.operand)?;
-                    let result_ty = match from_ty {
+                    let result_ty = match &from_ty {
                         TaintedType::UntaintedValue | TaintedType::UntaintedFnPtr => {
                             TaintedType::from_llvm_type(&bc.to_type)
                         },
                         TaintedType::TaintedValue | TaintedType::TaintedFnPtr => {
                             self.to_tainted(&TaintedType::from_llvm_type(&bc.to_type))
                         },
-                        TaintedType::UntaintedPointer(pointee) => match bc.to_type.as_ref() {
+                        TaintedType::UntaintedPointer(pointee)
+                        | TaintedType::TaintedPointer(pointee) => match bc.to_type.as_ref() {
                             Type::PointerType { pointee_type, .. } => {
                                 let result_pointee_type = if self.is_type_tainted(&pointee.ty()) {
                                     self.to_tainted(&TaintedType::from_llvm_type(&pointee_type))
                                 } else {
                                     TaintedType::from_llvm_type(&pointee_type)
                                 };
-                                TaintedType::untainted_ptr_to(result_pointee_type)
-                            },
-                            _ => return Err("Bitcast from pointer to non-pointer".into()), // my reading of the LLVM 9 LangRef disallows this
-                        },
-                        TaintedType::TaintedPointer(pointee) => match bc.to_type.as_ref() {
-                            Type::PointerType { pointee_type, .. } => {
-                                let result_pointee_type = if self.is_type_tainted(&pointee.ty()) {
-                                    self.to_tainted(&TaintedType::from_llvm_type(&pointee_type))
+                                if self.is_type_tainted(&from_ty) {
+                                    TaintedType::tainted_ptr_to(result_pointee_type)
                                 } else {
-                                    TaintedType::from_llvm_type(&pointee_type)
-                                };
-                                TaintedType::tainted_ptr_to(result_pointee_type)
+                                    TaintedType::untainted_ptr_to(result_pointee_type)
+                                }
                             },
                             _ => return Err("Bitcast from pointer to non-pointer".into()), // my reading of the LLVM 9 LangRef disallows this
                         },
-                        from_ty @ TaintedType::ArrayOrVector(_) => {
-                            if self.is_type_tainted(&from_ty) {
-                                self.to_tainted(&TaintedType::from_llvm_type(&bc.to_type))
-                            } else {
-                                TaintedType::from_llvm_type(&bc.to_type)
-                            }
-                        },
-                        from_ty @ TaintedType::Struct(_) => {
-                            if self.is_type_tainted(&from_ty) {
+                        from_ty @ TaintedType::ArrayOrVector(_)
+                        | from_ty @ TaintedType::Struct(_) => {
+                            if self.is_type_tainted(from_ty) {
                                 self.to_tainted(&TaintedType::from_llvm_type(&bc.to_type))
                             } else {
                                 TaintedType::from_llvm_type(&bc.to_type)
                             }
                         },
                         TaintedType::NamedStruct(name) => {
-                            self.get_named_struct_type(name).clone()
+                            let def = self.get_named_struct_type(name);
+                            if self.is_type_tainted(&def) {
+                                self.to_tainted(&TaintedType::from_llvm_type(&bc.to_type))
+                            } else {
+                                TaintedType::from_llvm_type(&bc.to_type)
+                            }
                         },
                     };
                     self.get_cur_fn().update_var_taintedtype(bc.get_result().clone(), result_ty)

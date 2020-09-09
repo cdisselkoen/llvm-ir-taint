@@ -155,7 +155,6 @@ impl<'m> FunctionTaintState<'m> {
             Constant::FDiv(f) => self.get_type_of_constant_binop(f),
             Constant::FRem(f) => self.get_type_of_constant_binop(f),
             Constant::Trunc(t) => self.get_type_of_constant(&t.operand),
-            Constant::BitCast(b) => self.get_type_of_constant(&b.operand),
             Constant::AddrSpaceCast(a) => self.get_type_of_constant(&a.operand),
             Constant::ZExt(z) => self.get_type_of_constant(&z.operand),
             Constant::SExt(s) => self.get_type_of_constant(&s.operand),
@@ -181,6 +180,52 @@ impl<'m> FunctionTaintState<'m> {
                     Ok(self.named_structs.borrow_mut().to_tainted(&int_type))
                 } else {
                     Ok(int_type)
+                }
+            },
+            Constant::BitCast(bc) => {
+                let from_ty = self.get_type_of_constant(&bc.operand)?;
+                match &from_ty {
+                    TaintedType::UntaintedValue | TaintedType::UntaintedFnPtr => {
+                        Ok(TaintedType::from_llvm_type(&bc.to_type))
+                    },
+                    TaintedType::TaintedValue | TaintedType::TaintedFnPtr => {
+                        Ok(self.named_structs.borrow_mut().to_tainted(&TaintedType::from_llvm_type(&bc.to_type)))
+                    },
+                    TaintedType::UntaintedPointer(pointee) | TaintedType::TaintedPointer(pointee) => match bc.to_type.as_ref() {
+                        Type::PointerType { pointee_type, .. } => {
+                            let mut named_structs = self.named_structs.borrow_mut();
+                            let is_pointee_tainted = named_structs.is_type_tainted(&pointee.ty(), self.name);
+                            let result_pointee_type = if is_pointee_tainted {
+                                named_structs.to_tainted(&TaintedType::from_llvm_type(&pointee_type))
+                            } else {
+                                TaintedType::from_llvm_type(&pointee_type)
+                            };
+                            if named_structs.is_type_tainted(&from_ty, self.name) {
+                                Ok(TaintedType::tainted_ptr_to(result_pointee_type))
+                            } else {
+                                Ok(TaintedType::untainted_ptr_to(result_pointee_type))
+                            }
+                        },
+                        _ => Err("Bitcast from pointer to non-pointer".into()), // my reading of the LLVM 9 LangRef disallows this
+                    },
+                    from_ty @ TaintedType::ArrayOrVector(_)
+                    | from_ty @ TaintedType::Struct(_) => {
+                        let mut named_structs = self.named_structs.borrow_mut();
+                        if named_structs.is_type_tainted(from_ty, self.name) {
+                            Ok(named_structs.to_tainted(&TaintedType::from_llvm_type(&bc.to_type)))
+                        } else {
+                            Ok(TaintedType::from_llvm_type(&bc.to_type))
+                        }
+                    }
+                    TaintedType::NamedStruct(name) => {
+                        let mut named_structs = self.named_structs.borrow_mut();
+                        let def = named_structs.get_named_struct_type(name.clone(), self.name).clone();
+                        if named_structs.is_type_tainted(&def, self.name) {
+                            Ok(named_structs.to_tainted(&TaintedType::from_llvm_type(&bc.to_type)))
+                        } else {
+                            Ok(TaintedType::from_llvm_type(&bc.to_type))
+                        }
+                    }
                 }
             },
             Constant::GetElementPtr(gep) => {
