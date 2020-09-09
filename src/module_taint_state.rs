@@ -550,15 +550,23 @@ impl<'m> ModuleTaintState<'m> {
                     let cur_fn = self.get_cur_fn();
                     let op0_ty = cur_fn.get_type_of_operand(&icmp.operand0)?;
                     let op1_ty = cur_fn.get_type_of_operand(&icmp.operand1)?;
-                    let result_ty = op0_ty.join(&op1_ty)?;
-                    cur_fn.update_var_taintedtype(icmp.get_result().clone(), result_ty)
+                    let result_ty = if self.is_type_tainted(&op0_ty) || self.is_type_tainted(&op1_ty) {
+                        TaintedType::TaintedValue
+                    } else {
+                        TaintedType::UntaintedValue
+                    };
+                    self.get_cur_fn().update_var_taintedtype(icmp.get_result().clone(), result_ty)
                 },
                 Instruction::FCmp(fcmp) => {
                     let cur_fn = self.get_cur_fn();
                     let op0_ty = cur_fn.get_type_of_operand(&fcmp.operand0)?;
                     let op1_ty = cur_fn.get_type_of_operand(&fcmp.operand1)?;
-                    let result_ty = op0_ty.join(&op1_ty)?;
-                    cur_fn.update_var_taintedtype(fcmp.get_result().clone(), result_ty)
+                    let result_ty = if self.is_type_tainted(&op0_ty) || self.is_type_tainted(&op1_ty) {
+                        TaintedType::TaintedValue
+                    } else {
+                        TaintedType::UntaintedValue
+                    };
+                    self.get_cur_fn().update_var_taintedtype(fcmp.get_result().clone(), result_ty)
                 },
                 Instruction::Phi(phi) => {
                     let cur_fn = self.get_cur_fn();
