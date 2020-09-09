@@ -234,7 +234,7 @@ impl<'m> FunctionTaintState<'m> {
     pub(crate) fn update_pointee_taintedtype(
         &self,
         pointee: &mut Pointee,
-        new_pointee: TaintedType,
+        new_pointee: &TaintedType,
     ) -> Result<bool, String> {
         pointee.update(new_pointee, &self)
     }

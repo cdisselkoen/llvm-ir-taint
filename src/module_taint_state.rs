@@ -496,65 +496,15 @@ impl<'m> ModuleTaintState<'m> {
                 },
                 Instruction::Load(load) => {
                     let cur_fn = self.get_cur_fn();
-                    let result_ty = match cur_fn.get_type_of_operand(&load.address)? {
-                        TaintedType::UntaintedValue | TaintedType::TaintedValue => {
-                            return Err(format!(
-                                "Load: address is not a pointer: {:?}",
-                                &load.address
-                            ));
-                        },
-                        TaintedType::UntaintedFnPtr | TaintedType::TaintedFnPtr => {
-                            return Err("Loading from a function pointer".into());
-                        },
-                        TaintedType::ArrayOrVector(_)
-                        | TaintedType::Struct(_)
-                        | TaintedType::NamedStruct(_) => {
-                            return Err(format!(
-                                "Load: address is not a pointer: {:?}",
-                                &load.address
-                            ));
-                        },
-                        TaintedType::UntaintedPointer(pointee) => {
-                            pointee.ty().clone()
-                        },
-                        TaintedType::TaintedPointer(pointee) => {
-                            if self.config.dereferencing_tainted_ptr_gives_tainted {
-                                pointee.taint(&mut self.named_structs.borrow_mut());
-                            }
-                            pointee.ty().clone()
-                        },
-                    };
+                    let addr_ty = cur_fn.get_type_of_operand(&load.address)?;
+                    let result_ty = self.get_load_result_ty(&addr_ty)?;
                     self.get_cur_fn().update_var_taintedtype(load.get_result().clone(), result_ty)
                 },
                 Instruction::Store(store) => {
                     let cur_fn = self.get_cur_fn();
-                    match cur_fn.get_type_of_operand(&store.address)? {
-                        TaintedType::UntaintedValue | TaintedType::TaintedValue => {
-                            Err(format!(
-                                "Store: address is not a pointer: {:?}",
-                                &store.address
-                            ))
-                        },
-                        TaintedType::UntaintedFnPtr | TaintedType::TaintedFnPtr => {
-                            Err("Storing to a function pointer".into())
-                        },
-                        TaintedType::ArrayOrVector(_)
-                        | TaintedType::Struct(_)
-                        | TaintedType::NamedStruct(_) => {
-                            Err(format!(
-                                "Store: address is not a pointer: {:?}",
-                                &store.address
-                            ))
-                        },
-                        TaintedType::UntaintedPointer(mut pointee) | TaintedType::TaintedPointer(mut pointee) => {
-                            // update the store address's type based on the value being stored through it.
-                            // specifically, update the pointee in that address type:
-                            // e.g., if we're storing a tainted value, we want
-                            // to update the address type to "pointer to tainted"
-                            let new_value_type = cur_fn.get_type_of_operand(&store.value)?;
-                            cur_fn.update_pointee_taintedtype(&mut pointee, new_value_type)
-                        },
-                    }
+                    let mut addr_ty = cur_fn.get_type_of_operand(&store.address)?;
+                    let new_value_ty = cur_fn.get_type_of_operand(&store.value)?;
+                    self.process_store(&new_value_ty, &mut addr_ty)
                 },
                 Instruction::Fence(_) => Ok(false),
                 Instruction::GetElementPtr(gep) => {
@@ -642,6 +592,15 @@ impl<'m> ModuleTaintState<'m> {
                     };
                     cur_fn.update_var_taintedtype(select.get_result().clone(), result_ty)
                 },
+                Instruction::AtomicRMW(rmw) => {
+                    let cur_fn = self.get_cur_fn();
+                    let mut addr_ty = cur_fn.get_type_of_operand(&rmw.address)?;
+                    let value_ty = cur_fn.get_type_of_operand(&rmw.value)?;
+                    let loaded_ty = self.get_load_result_ty(&addr_ty)?;
+                    let ty_to_store = loaded_ty.join(&value_ty)?;
+                    self.process_store(&ty_to_store, &mut addr_ty)?;
+                    self.get_cur_fn().update_var_taintedtype(rmw.get_result().clone(), loaded_ty)
+                },
                 Instruction::Call(call) => {
                     match &call.function {
                         Either::Right(Operand::ConstantOperand(cref)) => match cref.as_ref() {
@@ -664,7 +623,7 @@ impl<'m> ModuleTaintState<'m> {
                                         TaintedType::UntaintedPointer(pointee) | TaintedType::TaintedPointer(pointee) => pointee,
                                         _ => return Err(format!("llvm.memset: expected first argument to be a pointer, but it was {:?}", address_ty)),
                                     };
-                                    cur_fn.update_pointee_taintedtype(&mut pointee, value_ty)
+                                    cur_fn.update_pointee_taintedtype(&mut pointee, &value_ty)
                                 } else {
                                     self.process_function_call(call, name)
                                 }
@@ -739,6 +698,68 @@ impl<'m> ModuleTaintState<'m> {
                 },
                 _ => unimplemented!("instruction {:?}", inst),
             }
+        }
+    }
+
+    /// Get the `TaintedType` of the value loaded from the given address.
+    fn get_load_result_ty(&mut self, addr: &TaintedType) -> Result<TaintedType, String> {
+        match addr {
+            TaintedType::UntaintedValue | TaintedType::TaintedValue => {
+                Err(format!(
+                    "Load: address is not a pointer: got type {:?}",
+                    addr
+                ))
+            },
+            TaintedType::UntaintedFnPtr | TaintedType::TaintedFnPtr => {
+                Err("Loading from a function pointer".into())
+            },
+            TaintedType::ArrayOrVector(_)
+            | TaintedType::Struct(_)
+            | TaintedType::NamedStruct(_) => {
+                Err(format!(
+                    "Load: address is not a pointer: got type {:?}",
+                    addr
+                ))
+            },
+            TaintedType::UntaintedPointer(pointee) => {
+                Ok(pointee.ty().clone())
+            },
+            TaintedType::TaintedPointer(pointee) => {
+                if self.config.dereferencing_tainted_ptr_gives_tainted {
+                    pointee.taint(&mut self.named_structs.borrow_mut());
+                }
+                Ok(pointee.ty().clone())
+            },
+        }
+    }
+
+    /// Process the store of a value to an address.
+    fn process_store(&mut self, value: &TaintedType, addr: &mut TaintedType) -> Result<bool, String> {
+        match addr {
+            TaintedType::UntaintedValue | TaintedType::TaintedValue => {
+                Err(format!(
+                    "Store: address is not a pointer: got type {:?}",
+                    addr
+                ))
+            },
+            TaintedType::UntaintedFnPtr | TaintedType::TaintedFnPtr => {
+                Err("Storing to a function pointer".into())
+            },
+            TaintedType::ArrayOrVector(_)
+            | TaintedType::Struct(_)
+            | TaintedType::NamedStruct(_) => {
+                Err(format!(
+                    "Store: address is not a pointer: got type {:?}",
+                    addr
+                ))
+            },
+            TaintedType::UntaintedPointer(ref mut pointee) | TaintedType::TaintedPointer(ref mut pointee) => {
+                // update the store address's type based on the value being stored through it.
+                // specifically, update the pointee in that address type:
+                // e.g., if we're storing a tainted value, we want
+                // to update the address type to "pointer to tainted"
+                self.get_cur_fn().update_pointee_taintedtype(pointee, value)
+            },
         }
     }
 

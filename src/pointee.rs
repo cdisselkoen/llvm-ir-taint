@@ -129,9 +129,9 @@ impl Pointee {
     ///
     /// Returns `true` if the contents' `TaintedType` changed, accounting for the
     /// join operation.
-    pub(crate) fn update(&mut self, new_pointee_ty: TaintedType, fts: &FunctionTaintState) -> Result<bool, String> {
+    pub(crate) fn update(&mut self, new_pointee_ty: &TaintedType, fts: &FunctionTaintState) -> Result<bool, String> {
         let mut pointee_ty = self.ty.borrow_mut();
-        let joined_pointee_ty = pointee_ty.join(&new_pointee_ty)?;
+        let joined_pointee_ty = pointee_ty.join(new_pointee_ty)?;
         if &*pointee_ty == &joined_pointee_ty {
             // no change is necessary
             Ok(false)
