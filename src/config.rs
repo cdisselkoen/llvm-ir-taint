@@ -20,13 +20,9 @@ pub struct Config {
     pub ext_functions: HashMap<String, ExternalFunctionHandling>,
 
     /// How to handle external functions which _aren't_ present in the
-    /// `ext_functions` map above.
+    /// `ext_functions` map above; or function pointers where no valid target for
+    /// the function pointer exists in the `Module`.
     pub ext_functions_default: ExternalFunctionHandling,
-
-    /// How to handle calls to function pointers.
-    /// This is pretty limited, and ideally we'd have a better way to match
-    /// function pointers to the actual functions which they could possibly call.
-    pub fn_pointers: ExternalFunctionHandling,
 }
 
 impl Default for Config {
@@ -35,7 +31,6 @@ impl Default for Config {
             dereferencing_tainted_ptr_gives_tainted: true,
             ext_functions: HashMap::new(),
             ext_functions_default: ExternalFunctionHandling::Panic,
-            fn_pointers: ExternalFunctionHandling::Panic,
         }
     }
 }

@@ -25,10 +25,10 @@ pub(crate) struct ModuleTaintState<'m> {
     config: &'m Config,
 
     /// Map from function name to the `FunctionTaintState` for that function
-    fn_taint_states: HashMap<String, FunctionTaintState<'m>>,
+    fn_taint_states: HashMap<&'m str, FunctionTaintState<'m>>,
 
     /// Map from function name to the `FunctionSummary` for that function
-    fn_summaries: HashMap<String, FunctionSummary<'m>>,
+    fn_summaries: HashMap<&'m str, FunctionSummary<'m>>,
 
     /// Named structs used in the module, and their definitions (taint statuses)
     named_structs: Rc<RefCell<NamedStructs<'m>>>,
@@ -39,7 +39,10 @@ pub(crate) struct ModuleTaintState<'m> {
     /// Map from function name to the names of its callers.
     /// Whenever a function summary changes, we add its callers to the worklist
     /// because the new summary could affect inferred types in its callers.
-    callers: HashMap<String, HashSet<&'m str>>,
+    callers: HashMap<&'m str, HashSet<&'m str>>,
+
+    /// Map from function type to the names of functions which have that type
+    functions_by_type: HashMap<TypeRef, HashSet<&'m str>>,
 
     /// Set of functions which need to be processed again because there's been a
     /// change to taint information which might be relevant to them
@@ -118,6 +121,10 @@ impl<'m> ModuleTaintState<'m> {
                 (s.into(), fts)
             })
             .collect();
+        let mut functions_by_type: HashMap<TypeRef, HashSet<&'m str>> = HashMap::new();
+        for func in &module.functions {
+            functions_by_type.entry(module.type_of(func)).or_default().insert(&func.name);
+        }
         Self {
             module,
             config,
@@ -126,6 +133,7 @@ impl<'m> ModuleTaintState<'m> {
             named_structs,
             globals,
             callers: HashMap::new(),
+            functions_by_type,
             worklist,
             cur_fn: "", // we shouldn't use `cur_fn` until it's set to the first one we pop off the worklist
         }
@@ -271,7 +279,7 @@ impl<'m> ModuleTaintState<'m> {
         let globals: &Rc<_> = &self.globals; // similarly for the borrow checker - see note on above line
         let cur_fn = self
             .fn_taint_states
-            .entry(f.name.clone())
+            .entry(&f.name)
             .or_insert_with(|| {
                 FunctionTaintState::from_taint_map(
                     &f.name,
@@ -288,7 +296,7 @@ impl<'m> ModuleTaintState<'m> {
                 )
             });
 
-        let summary = match self.fn_summaries.entry(f.name.clone()) {
+        let summary = match self.fn_summaries.entry(&f.name) {
             Entry::Vacant(ventry) => {
                 // no summary: make a starter one, assuming everything is untainted
                 let param_llvm_types = f.parameters.iter().map(|p| module.type_of(p));
@@ -323,8 +331,9 @@ impl<'m> ModuleTaintState<'m> {
         if summary.update_params(param_tainted_types)? {
             // summary changed: put all callers of this function on the worklist
             if let Some(callers) = self.callers.get(self.cur_fn) {
+                let mut worklist = self.worklist.borrow_mut();
                 for caller in callers {
-                    self.worklist.borrow_mut().add(caller);
+                    worklist.add(caller);
                 }
             }
         }
@@ -635,63 +644,81 @@ impl<'m> ModuleTaintState<'m> {
                             _ => unimplemented!("Call of a constant function pointer"),
                         },
                         Either::Right(_) => {
-                            use config::ExternalFunctionHandling;
-                            match self.config.fn_pointers {
-                                ExternalFunctionHandling::IgnoreAndReturnUntainted => {
-                                    match &call.dest {
-                                        None => Ok(false),
-                                        Some(dest) => {
-                                            let untainted_ret_ty = TaintedType::from_llvm_type(&self.module.type_of(call));
-                                            self.get_cur_fn().update_var_taintedtype(dest.clone(), untainted_ret_ty)
+                            let func_ty = self.module.type_of(&call.function);
+                            let targets = self.functions_by_type.get(&func_ty);
+                            match targets {
+                                None => {
+                                    // no valid targets for the function pointer
+                                    // in this module; treat this as a call to
+                                    // an external function
+                                    use config::ExternalFunctionHandling;
+                                    match self.config.ext_functions_default {
+                                        ExternalFunctionHandling::IgnoreAndReturnUntainted => {
+                                            match &call.dest {
+                                                None => Ok(false),
+                                                Some(dest) => {
+                                                    let untainted_ret_ty = TaintedType::from_llvm_type(&self.module.type_of(call));
+                                                    self.get_cur_fn().update_var_taintedtype(dest.clone(), untainted_ret_ty)
+                                                },
+                                            }
+                                        },
+                                        ExternalFunctionHandling::IgnoreAndReturnTainted => {
+                                            match &call.dest {
+                                                None => Ok(false),
+                                                Some(dest) => {
+                                                    let untainted_ret_ty = TaintedType::from_llvm_type(&self.module.type_of(call));
+                                                    let tainted_ret_ty = self.to_tainted(&untainted_ret_ty);
+                                                    self.get_cur_fn().update_var_taintedtype(dest.clone(), tainted_ret_ty)
+                                                },
+                                            }
+                                        },
+                                        ExternalFunctionHandling::PropagateTaintShallow => {
+                                            let cur_fn = self.get_cur_fn();
+                                            if call
+                                                .arguments
+                                                .iter()
+                                                .map(|(o, _)| cur_fn.get_type_of_operand(o))
+                                                .collect::<Result<Vec<_>, String>>()?
+                                                .into_iter()
+                                                .any(|t| self.is_type_tainted(&t))
+                                            {
+                                                // just like IgnoreAndReturnTainted
+                                                match &call.dest {
+                                                    None => Ok(false),
+                                                    Some(dest) => {
+                                                        let untainted_ret_ty = TaintedType::from_llvm_type(&self.module.type_of(call));
+                                                        let tainted_ret_ty = self.to_tainted(&untainted_ret_ty);
+                                                        self.get_cur_fn().update_var_taintedtype(dest.clone(), tainted_ret_ty)
+                                                    },
+                                                }
+                                            } else {
+                                                // just like IgnoreAndReturnUntainted
+                                                match &call.dest {
+                                                    None => Ok(false),
+                                                    Some(dest) => {
+                                                        let untainted_ret_ty = TaintedType::from_llvm_type(&self.module.type_of(call));
+                                                        self.get_cur_fn().update_var_taintedtype(dest.clone(), untainted_ret_ty)
+                                                    },
+                                                }
+                                            }
+                                        },
+                                        ExternalFunctionHandling::PropagateTaintDeep => {
+                                            unimplemented!("ExternalFunctionHandling::PropagateTaintDeep")
+                                        },
+                                        ExternalFunctionHandling::Panic => {
+                                            panic!("Call of a function pointer")
                                         },
                                     }
                                 },
-                                ExternalFunctionHandling::IgnoreAndReturnTainted => {
-                                    match &call.dest {
-                                        None => Ok(false),
-                                        Some(dest) => {
-                                            let untainted_ret_ty = TaintedType::from_llvm_type(&self.module.type_of(call));
-                                            let tainted_ret_ty = self.to_tainted(&untainted_ret_ty);
-                                            self.get_cur_fn().update_var_taintedtype(dest.clone(), tainted_ret_ty)
-                                        },
+                                Some(targets) => {
+                                    let targets: Vec<&'m str> = targets.iter().copied().collect(); // release the borrow of `self`, and allow `self.callers` to be mutated. I gamble that collecting into a Vec and iterating over the Vec is faster than cloning the HashSet and iterating over the clone.
+                                    let mut changed = false;
+                                    // we could call any of these targets. Taint accordingly.
+                                    for target in targets {
+                                        changed |= self.process_function_call(call, target)?;
                                     }
-                                },
-                                ExternalFunctionHandling::PropagateTaintShallow => {
-                                    let cur_fn = self.get_cur_fn();
-                                    if call
-                                        .arguments
-                                        .iter()
-                                        .map(|(o, _)| cur_fn.get_type_of_operand(o))
-                                        .collect::<Result<Vec<_>, String>>()?
-                                        .into_iter()
-                                        .any(|t| self.is_type_tainted(&t))
-                                    {
-                                        // just like IgnoreAndReturnTainted
-                                        match &call.dest {
-                                            None => Ok(false),
-                                            Some(dest) => {
-                                                let untainted_ret_ty = TaintedType::from_llvm_type(&self.module.type_of(call));
-                                                let tainted_ret_ty = self.to_tainted(&untainted_ret_ty);
-                                                self.get_cur_fn().update_var_taintedtype(dest.clone(), tainted_ret_ty)
-                                            },
-                                        }
-                                    } else {
-                                        // just like IgnoreAndReturnUntainted
-                                        match &call.dest {
-                                            None => Ok(false),
-                                            Some(dest) => {
-                                                let untainted_ret_ty = TaintedType::from_llvm_type(&self.module.type_of(call));
-                                                self.get_cur_fn().update_var_taintedtype(dest.clone(), untainted_ret_ty)
-                                            },
-                                        }
-                                    }
-                                },
-                                ExternalFunctionHandling::PropagateTaintDeep => {
-                                    unimplemented!("ExternalFunctionHandling::PropagateTaintDeep")
-                                },
-                                ExternalFunctionHandling::Panic => {
-                                    panic!("Call of a function pointer")
-                                },
+                                    Ok(changed)
+                                }
                             }
                         },
                         Either::Left(_) => unimplemented!("inline assembly"),
@@ -768,14 +795,13 @@ impl<'m> ModuleTaintState<'m> {
     fn process_function_call(
         &mut self,
         call: &instruction::Call,
-        funcname: &'m String,
+        funcname: &'m str,
     ) -> Result<bool, String> {
         let module = self.module;
-        // mark this function as a caller of the called function.
+        // mark the current function as a caller of the called function.
         // This ensures that if the summary of the called function is ever updated,
         // the current function will be put back on the worklist.
-        let callers = self.callers.entry(funcname.clone()).or_default();
-        callers.insert(&self.cur_fn);
+        self.callers.entry(funcname).or_default().insert(&self.cur_fn);
         // Get the function summary for the called function
         let summary = match self.fn_summaries.entry(funcname.clone()) {
             Entry::Occupied(oentry) => oentry.into_mut(),
