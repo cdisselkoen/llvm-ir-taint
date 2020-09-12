@@ -10,6 +10,7 @@ use either::Either;
 use itertools::Itertools;
 use llvm_ir::instruction::{groups, BinaryOp, HasResult, UnaryOp};
 use llvm_ir::*;
+use llvm_ir_analysis::Analysis;
 use log::debug;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -20,6 +21,9 @@ use std::rc::Rc;
 pub(crate) struct ModuleTaintState<'m> {
     /// llvm-ir `Module`
     module: &'m Module,
+
+    /// `Analysis` for this `Module`
+    analysis: Analysis<'m>,
 
     /// The configuration for the analysis
     config: &'m Config,
@@ -35,11 +39,6 @@ pub(crate) struct ModuleTaintState<'m> {
 
     /// Globals used in the module, and their definitions (taint statuses)
     globals: Rc<RefCell<Globals<'m>>>,
-
-    /// Map from function name to the names of its callers.
-    /// Whenever a function summary changes, we add its callers to the worklist
-    /// because the new summary could affect inferred types in its callers.
-    callers: HashMap<&'m str, HashSet<&'m str>>,
 
     /// Map from function type to the names of functions which have that type
     functions_by_type: HashMap<TypeRef, HashSet<&'m str>>,
@@ -104,6 +103,7 @@ impl<'m> ModuleTaintState<'m> {
         fn_taint_maps: HashMap<&'m str, HashMap<Name, TaintedType>>,
         named_structs: HashMap<String, NamedStructInitialDef>,
     ) -> Self {
+        let analysis = Analysis::new(module);
         let named_structs = Rc::new(RefCell::new(NamedStructs::with_initial_defs(module, named_structs)));
         let globals = Rc::new(RefCell::new(Globals::new()));
         let worklist = Rc::new(RefCell::new(start_fns.into_iter().collect()));
@@ -127,12 +127,12 @@ impl<'m> ModuleTaintState<'m> {
         }
         Self {
             module,
+            analysis,
             config,
             fn_taint_states,
             fn_summaries: HashMap::new(),
             named_structs,
             globals,
-            callers: HashMap::new(),
             functions_by_type,
             worklist,
             cur_fn: "", // we shouldn't use `cur_fn` until it's set to the first one we pop off the worklist
@@ -330,11 +330,10 @@ impl<'m> ModuleTaintState<'m> {
             .collect();
         if summary.update_params(param_tainted_types)? {
             // summary changed: put all callers of this function on the worklist
-            if let Some(callers) = self.callers.get(self.cur_fn) {
-                let mut worklist = self.worklist.borrow_mut();
-                for caller in callers {
-                    worklist.add(caller);
-                }
+            // because the new summary could affect inferred types in its callers
+            let mut worklist = self.worklist.borrow_mut();
+            for caller in self.analysis.call_graph().callers(self.cur_fn) {
+                worklist.add(caller);
             }
         }
 
@@ -645,6 +644,8 @@ impl<'m> ModuleTaintState<'m> {
                         },
                         Either::Right(_) => {
                             let func_ty = self.module.type_of(&call.function);
+                            // Assume that this function pointer could point to any function in
+                            // the current module that has the appropriate type
                             let targets = self.functions_by_type.get(&func_ty);
                             match targets {
                                 None => {
@@ -711,7 +712,7 @@ impl<'m> ModuleTaintState<'m> {
                                     }
                                 },
                                 Some(targets) => {
-                                    let targets: Vec<&'m str> = targets.iter().copied().collect(); // release the borrow of `self`, and allow `self.callers` to be mutated. I gamble that collecting into a Vec and iterating over the Vec is faster than cloning the HashSet and iterating over the clone.
+                                    let targets: Vec<&'m str> = targets.iter().copied().collect(); // release the borrow of `self`, so that we can mutably borrow it to `process_function_call()`. I gamble that collecting into a Vec and iterating over the Vec is faster than cloning the HashSet and iterating over the clone.
                                     let mut changed = false;
                                     // we could call any of these targets. Taint accordingly.
                                     for target in targets {
@@ -798,10 +799,6 @@ impl<'m> ModuleTaintState<'m> {
         funcname: &'m str,
     ) -> Result<bool, String> {
         let module = self.module;
-        // mark the current function as a caller of the called function.
-        // This ensures that if the summary of the called function is ever updated,
-        // the current function will be put back on the worklist.
-        self.callers.entry(funcname).or_default().insert(&self.cur_fn);
         // Get the function summary for the called function
         let summary = match self.fn_summaries.entry(funcname.clone()) {
             Entry::Occupied(oentry) => oentry.into_mut(),
@@ -834,11 +831,13 @@ impl<'m> ModuleTaintState<'m> {
             .collect::<Result<_, _>>()?;
         if summary.update_params(arg_types)? {
             // summary changed: put all callers of the called function on the worklist
-            for caller in self.callers.get(funcname).unwrap().iter() {
-                self.worklist.borrow_mut().add(caller);
+            // because the new summary could affect inferred types in its callers
+            let mut worklist = self.worklist.borrow_mut();
+            for caller in self.analysis.call_graph().callers(funcname) {
+                worklist.add(caller);
             }
             // and also put the called function itself on the worklist
-            self.worklist.borrow_mut().add(funcname);
+            worklist.add(funcname);
         }
         // and finally, for non-void calls, use the return type in the summary to
         // update the type of the result in this function
@@ -878,14 +877,10 @@ impl<'m> ModuleTaintState<'m> {
                             .transpose()?;
                         if summary.update_ret(&ty.as_ref())? {
                             // summary changed: put all our callers on the worklist
-                            for caller in self
-                                .callers
-                                .get(self.cur_fn)
-                                .into_iter()
-                                .map(|hs| hs.iter())
-                                .flatten()
-                            {
-                                self.worklist.borrow_mut().add(caller);
+                            // because the new summary could affect inferred types in our callers
+                            let mut worklist = self.worklist.borrow_mut();
+                            for caller in self.analysis.call_graph().callers(self.cur_fn) {
+                                worklist.add(caller);
                             }
                             Ok(true)
                         } else {
