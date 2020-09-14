@@ -1,7 +1,6 @@
 use llvm_ir::{Module, Name};
 use llvm_ir_taint::*;
 use std::collections::HashMap;
-use std::path::Path;
 
 fn init_logging() {
     // capture log messages with test harness
@@ -10,13 +9,13 @@ fn init_logging() {
 
 fn get_basic_module() -> Module {
     let modname = "../haybale/tests/bcfiles/basic.bc";
-    Module::from_bc_path(&Path::new(modname))
+    Module::from_bc_path(modname)
         .unwrap_or_else(|e| panic!("Failed to parse module {:?}: {}", modname, e))
 }
 
 fn get_memory_module() -> Module {
     let modname = "../haybale/tests/bcfiles/memory.bc";
-    Module::from_bc_path(&Path::new(modname))
+    Module::from_bc_path(modname)
         .unwrap_or_else(|e| panic!("Failed to parse module {:?}: {}", modname, e))
 }
 
