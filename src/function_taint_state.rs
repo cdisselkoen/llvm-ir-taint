@@ -122,12 +122,14 @@ impl<'m> FunctionTaintState<'m> {
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(TaintedType::struct_of(elements))
             },
-            Constant::Array { element_type, .. } => Ok(TaintedType::from_llvm_type(element_type)),
+            Constant::Array { element_type, .. } => {
+                Ok(TaintedType::array_or_vec_of(TaintedType::from_llvm_type(element_type)))
+            },
             Constant::Vector(vec) => {
                 // all elements should be the same type, so we do the type of the first one
-                Ok(TaintedType::from_llvm_type(
+                Ok(TaintedType::array_or_vec_of(TaintedType::from_llvm_type(
                     &self.module.type_of(vec.get(0).expect("Constant::Vector should not be empty"))
-                ))
+                )))
             },
             Constant::Undef(ty) => Ok(TaintedType::from_llvm_type(ty)),
             Constant::BlockAddress => Ok(TaintedType::UntaintedValue), // technically a pointer, but for our purposes an opaque constant
