@@ -500,9 +500,13 @@ impl<'m> ModuleTaintState<'m> {
                 },
                 Instruction::ExtractValue(ev) => {
                     let cur_fn = self.fn_taint_states.get_current();
+                    // We make a pointer to the struct, and add an extra index
+                    // representing getting element 0 of the resulting implicit
+                    // array of structs, because get_element_ptr expects a pointer
                     let ptr_to_struct =
                         TaintedType::untainted_ptr_to(cur_fn.get_type_of_operand(&ev.aggregate)?);
-                    let element_ptr_ty = self.get_element_ptr(&ptr_to_struct, &ev.indices)?;
+                    let indices: Vec<u32> = std::iter::once(&0).chain(ev.indices.iter()).copied().collect();
+                    let element_ptr_ty = self.get_element_ptr(&ptr_to_struct, &indices)?;
                     let element_ty = match element_ptr_ty {
                         TaintedType::UntaintedPointer(pointee) => pointee.ty().clone(),
                         _ => return Err(format!("ExtractValue: expected get_element_ptr to return an UntaintedPointer here; got {}", element_ptr_ty)),
