@@ -6,7 +6,7 @@ use crate::worklist::Worklist;
 use llvm_ir::*;
 use llvm_ir::constant::ConstBinaryOp;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::collections::hash_map::Entry;
 use std::rc::Rc;
 
@@ -14,8 +14,11 @@ use std::rc::Rc;
 pub struct FunctionTaintState<'m> {
     /// Name of the function
     name: &'m str,
-    /// Map from `Name`s of variables to their (currently believed) types.
+    /// Map from `Name`s of variables to their (currently believed) types
     map: HashMap<Name, TaintedType>,
+    /// Set of basic blocks that have tainted terminators (e.g., the branch
+    /// condition is tainted). Unconditional branches are never tainted.
+    tainted_terminators: HashSet<Name>,
     /// Reference to the llvm-ir `Module`
     module: &'m Module,
     /// Reference to the module's named struct types
@@ -38,6 +41,7 @@ impl<'m> FunctionTaintState<'m> {
         Self {
             name,
             map: taintmap,
+            tainted_terminators: HashSet::new(),
             module,
             named_structs,
             globals,
@@ -282,5 +286,17 @@ impl<'m> FunctionTaintState<'m> {
         new_pointee: &TaintedType,
     ) -> Result<bool, String> {
         pointee.update(new_pointee, &self)
+    }
+
+    /// Is the terminator of the given block tainted?
+    pub(crate) fn is_terminator_tainted(&self, block: &Name) -> bool {
+        self.tainted_terminators.contains(block)
+    }
+
+    /// Mark the terminator of the block with the given `Name` as tainted.
+    ///
+    /// Returns `true` if this was a change.
+    pub(crate) fn mark_terminator_tainted(&mut self, block: Name) -> bool {
+        self.tainted_terminators.insert(block)
     }
 }

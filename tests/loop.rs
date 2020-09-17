@@ -62,6 +62,51 @@ fn for_loop() {
 }
 
 #[test]
+fn loop_with_cond() {
+    init_logging();
+    let funcname = "loop_with_cond";
+    let module = get_module();
+    let config = Config::default();
+
+    // This tests that tainted control flow works properly.
+    // Tainting the input (%0) means that %19 gets tainted; %19 influences the
+    // control flow out of block %16, so the value stored to %2 in block %13
+    // should be tainted, and since the value stored at %2 is marked tainted,
+    // the value loaded into %14 should also be marked tainted.
+    // Likewise, again due to tainted control flow, the value stored to %3 in
+    // block %16 should be tainted, so the value loaded into (for instance) %17
+    // should also be marked tainted.
+    let mtr = do_taint_analysis_on_function(
+        &module,
+        &config,
+        funcname,
+        Some(vec![TaintedType::TaintedValue]),
+        HashMap::new(),
+        HashMap::new(),
+    );
+    let taintmap = mtr.get_function_taint_map(funcname);
+    for (name, ty) in taintmap {
+        println!("{}: {}", name, ty);
+    }
+    assert_eq!(
+        taintmap.get(&Name::from(0)),
+        Some(&TaintedType::TaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(19)),
+        Some(&TaintedType::TaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(14)),
+        Some(&TaintedType::TaintedValue)
+    );
+    assert_eq!(
+        taintmap.get(&Name::from(17)),
+        Some(&TaintedType::TaintedValue)
+    );
+}
+
+#[test]
 fn loop_over_array() {
     init_logging();
     let funcname = "loop_over_array";

@@ -47,6 +47,9 @@ pub(crate) struct ModuleTaintState<'m> {
 
     /// Name of the function currently being processed
     cur_fn: &'m str,
+
+    /// Name of the block currently being processed, if any
+    cur_block: Option<&'m Name>,
 }
 
 /// Owns all of the `FunctionTaintState`s which we're working with
@@ -177,6 +180,7 @@ impl<'m> ModuleTaintState<'m> {
             globals,
             worklist,
             cur_fn: "", // we shouldn't use `cur_fn` until it's set to the first one we pop off the worklist
+            cur_block: None,
         }
     }
 
@@ -369,6 +373,7 @@ impl<'m> ModuleTaintState<'m> {
         // now do a pass over the function to propagate taints
         let mut changed = false;
         for bb in &f.basic_blocks {
+            self.cur_block = Some(&bb.name);
             for inst in &bb.instrs {
                 changed |= self.process_instruction(inst).map_err(|e| {
                     format!(
@@ -384,6 +389,7 @@ impl<'m> ModuleTaintState<'m> {
                 )
             })?;
         }
+        self.cur_block = None;
         Ok(changed)
     }
 
@@ -392,6 +398,7 @@ impl<'m> ModuleTaintState<'m> {
     ///
     /// Returns `true` if a change was made to the `FunctionTaintState`, or `false` if not.
     fn process_instruction(&mut self, inst: &'m Instruction) -> Result<bool, String> {
+        // debug!("Processing {}", brief_display_instruction(inst));
         if inst.is_binary_op() {
             let cur_fn = self.fn_taint_states.get_current();
             let bop: groups::BinaryOp = inst.clone().try_into().unwrap();
@@ -617,7 +624,44 @@ impl<'m> ModuleTaintState<'m> {
                     for ty in incoming_types {
                         result_ty = result_ty.join(&ty)?;
                     }
-                    cur_fn.update_var_taintedtype(phi.get_result().clone(), result_ty)
+                    // in addition, the result should be tainted if the attacker can influence
+                    // the control flow sufficiently to choose the result of this phi.
+                    //
+                    // Examples: (blocks A, B, C, etc)
+                    // Suppose the branch condition in A's terminator is tainted.
+                    //
+                    //    A          A           A          A                 A      B
+                    //  /   \      /   \         | \      /   \             /   \  /   \
+                    // B     C    B     C   Z    |  B    B     C <-- \     Z     D      Y
+                    //  \   /      \   /   /     | /     |     |      |
+                    //    D   Z      D  --       D       Y     Z --> /
+                    //    | /        |   /                \   /
+                    //    E          E -                    D
+                    //
+                    // In all of the above examples, if D has a phi node, the result of that
+                    // phi should be tainted; but if E has a phi node, the result of that phi
+                    // should not be tainted.
+                    // In all of the above examples, either D itself is control-dependent on A
+                    // (as in the fifth example), or at least one of D's predecessors is. (Not
+                    // necessarily all, as the second and third example show.)
+                    // But E is not control-dependent on A, and neither are any of E's
+                    // predecessors.
+                    // So we taint the phi result if either D is control-dependent on A or if
+                    // any of D's predecessors are control-dependent on A.
+                    // I.e., we taint this phi's result if the current block is control-
+                    // dependent on a block with tainted terminator, or if any of the incoming
+                    // phi blocks are control-dependent on a block with tainted terminator.
+                    let cdg = self.analysis.control_dependence_graph(&self.cur_fn);
+                    let is_ctrl_dep_on_tainted_term = |block: &'m Name| {
+                        cdg.get_control_dependencies(block)
+                            .any(|dep| cur_fn.is_terminator_tainted(dep))
+                    };
+                    if is_ctrl_dep_on_tainted_term(&self.cur_block.unwrap()) {
+                        result_ty = self.to_tainted(&result_ty);
+                    } else if phi.incoming_values.iter().any(|(_, block)| is_ctrl_dep_on_tainted_term(block)) {
+                        result_ty = self.to_tainted(&result_ty);
+                    }
+                    self.fn_taint_states.get_current().update_var_taintedtype(phi.get_result().clone(), result_ty)
                 },
                 Instruction::Select(select) => {
                     let cur_fn = self.fn_taint_states.get_current();
@@ -808,11 +852,27 @@ impl<'m> ModuleTaintState<'m> {
                 ))
             },
             TaintedType::UntaintedPointer(ref mut pointee) | TaintedType::TaintedPointer(ref mut pointee) => {
-                // update the store address's type based on the value being stored through it.
+                // Storing to a location while control-flow is tainted also
+                // needs to result in the stored value being marked tainted.
+                // This is because a tainted value (in some branch condition
+                // etc) influenced the value stored at this location.
+                let cur_fn = self.fn_taint_states.get_current();
+                let cdg = self.analysis.control_dependence_graph(self.cur_fn);
+                let need_to_taint = cdg
+                    .get_control_dependencies(&self.cur_block.unwrap())
+                    .any(|dep| cur_fn.is_terminator_tainted(dep));
+
+                // now update the store address's type based on the value being
+                // stored through it.
                 // specifically, update the pointee in that address type:
                 // e.g., if we're storing a tainted value, we want
                 // to update the address type to "pointer to tainted"
-                self.fn_taint_states.get_current().update_pointee_taintedtype(pointee, value)
+                if need_to_taint {
+                    let tainted_val = self.to_tainted(value);
+                    self.fn_taint_states.get_current().update_pointee_taintedtype(pointee, &tainted_val)
+                } else {
+                    cur_fn.update_pointee_taintedtype(pointee, value)
+                }
             },
         }
     }
@@ -871,10 +931,21 @@ impl<'m> ModuleTaintState<'m> {
     fn process_terminator(&mut self, term: &Terminator) -> Result<bool, String> {
         match term {
             Terminator::Ret(ret) => {
+                // first mark the terminator tainted if necessary
+                let mut changed = false;
+                if let Some(ret_val) = &ret.return_operand {
+                    let cur_fn = self.fn_taint_states.get_current();
+                    let op_type = cur_fn.get_type_of_operand(ret_val)?;
+                    if self.is_type_tainted(&op_type) {
+                        let cur_fn = self.fn_taint_states.get_current();
+                        changed |= cur_fn.mark_terminator_tainted(self.cur_block.cloned().unwrap());
+                    }
+                }
+                // now update the function summary if necessary
                 match self.fn_summaries.get_mut(self.cur_fn) {
                     None => {
                         // no summary: no use making one until we know we need one
-                        Ok(false)
+                        Ok(changed)
                     },
                     Some(summary) => {
                         let cur_fn = self.fn_taint_states.get_current();
@@ -890,18 +961,44 @@ impl<'m> ModuleTaintState<'m> {
                             for caller in self.analysis.call_graph().callers(self.cur_fn) {
                                 worklist.add(caller);
                             }
-                            Ok(true)
-                        } else {
-                            Ok(false)
+                            changed = true;
                         }
+                        Ok(changed)
                     },
                 }
             },
-            Terminator::Br(_)
-            | Terminator::CondBr(_)
-            | Terminator::Switch(_)
-            | Terminator::IndirectBr(_)
-            | Terminator::Unreachable(_) => Ok(false), // we don't need to do anything for any of these terminators
+            Terminator::CondBr(condbr) => {
+                let cur_fn = self.fn_taint_states.get_current();
+                let op_type = cur_fn.get_type_of_operand(&condbr.condition)?;
+                if self.is_type_tainted(&op_type) {
+                    let cur_fn = self.fn_taint_states.get_current();
+                    Ok(cur_fn.mark_terminator_tainted(self.cur_block.cloned().unwrap()))
+                } else {
+                    Ok(false)
+                }
+            },
+            Terminator::Switch(switch) => {
+                let cur_fn = self.fn_taint_states.get_current();
+                let op_type = cur_fn.get_type_of_operand(&switch.operand)?;
+                if self.is_type_tainted(&op_type) {
+                    let cur_fn = self.fn_taint_states.get_current();
+                    Ok(cur_fn.mark_terminator_tainted(self.cur_block.cloned().unwrap()))
+                } else {
+                    Ok(false)
+                }
+            },
+            Terminator::IndirectBr(ibr) => {
+                let cur_fn = self.fn_taint_states.get_current();
+                let op_type = cur_fn.get_type_of_operand(&ibr.operand)?;
+                if self.is_type_tainted(&op_type) {
+                    let cur_fn = self.fn_taint_states.get_current();
+                    Ok(cur_fn.mark_terminator_tainted(self.cur_block.cloned().unwrap()))
+                } else {
+                    Ok(false)
+                }
+            },
+            Terminator::Br(_) => Ok(false), // unconditional branches can't be tainted
+            Terminator::Unreachable(_) => Ok(false),
             _ => unimplemented!("terminator {:?}", term),
         }
     }
@@ -927,4 +1024,19 @@ fn insert_value_into_struct(
         None => *aggregate = element,
     }
     */
+}
+
+/// for debugging. E.g., if you want to print each instruction as it's being
+/// processed, it's nice to have a very short description that still identifies
+/// the instruction
+#[allow(dead_code)]
+fn brief_display_instruction(inst: &Instruction) -> String {
+    match inst.try_get_result() {
+        Some(name) => format!("instruction producing {}", name),
+        None => match inst {
+            Instruction::Store(_) => "a store".into(),
+            Instruction::Call(_) => "a void call".into(),
+            _ => "a void-typed instruction".into(),
+        }
+    }
 }

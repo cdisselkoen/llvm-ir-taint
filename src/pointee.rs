@@ -2,6 +2,7 @@ use crate::function_taint_state::FunctionTaintState;
 use crate::named_structs::{NamedStructs, TaintedNamedStructs};
 use crate::tainted_type::TaintedType;
 use llvm_ir::Name;
+use log::debug;
 use std::cell::{Ref, RefCell};
 use std::fmt;
 use std::rc::Rc;
@@ -145,6 +146,7 @@ impl Pointee {
             // element, we want to update _both pointers_ (the original array
             // pointer, and the element pointer) to have type
             // pointer-to-tainted.
+            debug!("Updating pointee {:?} to {}", self.as_ptr(), joined_pointee_ty);
             *pointee_ty = joined_pointee_ty;
             // If we just updated an element of a named struct, add all the
             // users of that named struct to the worklist
@@ -182,9 +184,17 @@ impl Pointee {
         } else {
             // update the type.
             // See notes on and inside `update()`
+            debug!("Updating pointee {:?} to {}", self.as_ptr(), tainted_ty);
             *pointee_ty = tainted_ty;
             true
         }
+    }
+
+    /// Intended for use in debugging. Allows you to distinguish which `Pointee`s
+    /// are linked (in that updating one updates the others) because they return
+    /// the same pointer here
+    pub(crate) fn as_ptr(&self) -> *const TaintedType {
+        self.ty.as_ptr()
     }
 }
 
