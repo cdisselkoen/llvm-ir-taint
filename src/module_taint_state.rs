@@ -515,14 +515,22 @@ impl<'m> ModuleTaintState<'m> {
                 },
                 Instruction::InsertValue(iv) => {
                     let cur_fn = self.fn_taint_states.get_current();
-                    let mut aggregate = cur_fn.get_type_of_operand(&iv.aggregate)?;
+                    let struct_ty = cur_fn.get_type_of_operand(&iv.aggregate)?;
                     let element_to_insert = cur_fn.get_type_of_operand(&iv.element)?;
-                    insert_value_into_struct(
-                        &mut aggregate,
-                        iv.indices.iter().copied(),
-                        element_to_insert,
-                    );
-                    cur_fn.update_var_taintedtype(iv.get_result().clone(), aggregate)
+                    // We make a pointer to the struct, and add an extra index
+                    // representing getting element 0 of the resulting implicit
+                    // array of structs, because get_element_ptr expects a pointer
+                    let ptr_to_struct = TaintedType::untainted_ptr_to(struct_ty.clone());
+                    let indices: Vec<u32> = std::iter::once(&0).chain(iv.indices.iter()).copied().collect();
+                    let ptr_to_indicated_element = self.get_element_ptr(&ptr_to_struct, &indices)?;
+                    let cur_fn = self.fn_taint_states.get_current();
+                    match ptr_to_indicated_element {
+                        TaintedType::UntaintedPointer(mut pointee) | TaintedType::TaintedPointer(mut pointee) => {
+                            cur_fn.update_pointee_taintedtype(&mut pointee, &element_to_insert)?;
+                        },
+                        _ => panic!("Expected get_element_ptr to return a pointer, but got {}", ptr_to_indicated_element),
+                    }
+                    cur_fn.update_var_taintedtype(iv.get_result().clone(), struct_ty)
                 },
                 Instruction::Alloca(alloca) => {
                     let cur_fn = self.fn_taint_states.get_current();
@@ -1014,20 +1022,6 @@ impl<'m> ModuleTaintState<'m> {
     ) -> Result<TaintedType, String> {
         self.named_structs.borrow_mut().get_element_ptr(&self.cur_fn, parent_ptr, indices)
     }
-}
-
-/// Given a struct type and a list of indices for recursive descent, change the indicated element to be the given TaintedType
-fn insert_value_into_struct(
-    _aggregate: &mut TaintedType,
-    _indices: impl IntoIterator<Item = u32>,
-    _element_type: TaintedType,
-) {
-    unimplemented!()
-    /*
-    match indices.into_iter().next() {
-        None => *aggregate = element,
-    }
-    */
 }
 
 /// for debugging. E.g., if you want to print each instruction as it's being
