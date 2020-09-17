@@ -16,6 +16,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::convert::TryInto;
+use std::iter::FromIterator;
 use std::rc::Rc;
 
 pub(crate) struct ModuleTaintState<'m> {
@@ -28,8 +29,8 @@ pub(crate) struct ModuleTaintState<'m> {
     /// The configuration for the analysis
     config: &'m Config,
 
-    /// Map from function name to the `FunctionTaintState` for that function
-    fn_taint_states: HashMap<&'m str, FunctionTaintState<'m>>,
+    /// The `FunctionTaintState`s we're working with
+    fn_taint_states: FunctionTaintStates<'m>,
 
     /// Map from function name to the `FunctionSummary` for that function
     fn_summaries: HashMap<&'m str, FunctionSummary<'m>>,
@@ -46,6 +47,54 @@ pub(crate) struct ModuleTaintState<'m> {
 
     /// Name of the function currently being processed
     cur_fn: &'m str,
+}
+
+/// Owns all of the `FunctionTaintState`s which we're working with
+///
+/// To create one of these, use `.collect()` --- see the `FromIterator`
+/// implementation below
+struct FunctionTaintStates<'m> {
+    /// Map from function name to the `FunctionTaintState` for that function
+    map: HashMap<&'m str, FunctionTaintState<'m>>,
+
+    /// Name of the function currently being processed
+    cur_fn: &'m str,
+}
+
+impl<'m> FunctionTaintStates<'m> {
+    /// Get the `FunctionTaintState` for the current function, panicking if one
+    /// does not already exist.
+    ///
+    /// Be sure to have set the current function properly, with
+    /// `set_current_fn()`.
+    fn get_current(&mut self) -> &mut FunctionTaintState<'m> {
+        let cur_fn = self.cur_fn;
+        self.map.get_mut(cur_fn).unwrap_or_else(|| {
+            panic!("no taint state found for current function {:?}", cur_fn)
+        })
+    }
+
+    /// Get the `FunctionTaintState` for the current function, or if one does
+    /// not exist, use the given closure to create one for it first.
+    fn get_current_or_insert_with(&mut self, f: impl FnOnce() -> FunctionTaintState<'m>) -> &mut FunctionTaintState<'m> {
+        self.map.entry(self.cur_fn).or_insert_with(f)
+    }
+
+    /// Set the current function name
+    fn set_current_fn(&mut self, fn_name: &'m str) {
+        self.cur_fn = fn_name;
+    }
+}
+
+impl<'m> FromIterator<(&'m str, FunctionTaintState<'m>)> for FunctionTaintStates<'m> {
+    fn from_iter<T>(iter: T) -> Self
+        where T: IntoIterator<Item = (&'m str, FunctionTaintState<'m>)>
+    {
+        Self {
+            map: iter.into_iter().collect(),
+            cur_fn: "", // must call `set_current_fn()` before `get_current()`
+        }
+    }
 }
 
 impl<'m> ModuleTaintState<'m> {
@@ -133,7 +182,7 @@ impl<'m> ModuleTaintState<'m> {
 
     pub(crate) fn into_module_taint_result(self) -> ModuleTaintResult<'m> {
         ModuleTaintResult {
-            fn_taint_states: self.fn_taint_states,
+            fn_taint_states: self.fn_taint_states.map,
             named_struct_types: self
                 .named_structs
                 .borrow()
@@ -224,18 +273,6 @@ impl<'m> ModuleTaintState<'m> {
         }
     }
 
-    fn get_cur_fn(&mut self) -> &mut FunctionTaintState<'m> {
-        let cur_fn_name: &str = &self.cur_fn;
-        self.fn_taint_states
-            .get_mut(cur_fn_name.into())
-            .unwrap_or_else(|| {
-                panic!(
-                    "get_cur_fn: no taint state found for function {:?}",
-                    cur_fn_name
-                )
-            })
-    }
-
     /// Get the `TaintedType` for the given struct name.
     /// Marks the current function as a user of this named struct.
     /// Creates an untainted `TaintedType` for this named struct if no type
@@ -263,6 +300,7 @@ impl<'m> ModuleTaintState<'m> {
     fn process_function(&mut self, f: &'m Function) -> Result<bool, String> {
         debug!("Processing function {:?}", &f.name);
         self.cur_fn = &f.name;
+        self.fn_taint_states.set_current_fn(&f.name);
 
         // get the taint state for the current function, creating a new one if necessary
         let module = self.module; // this is for the borrow checker - allows us to access `module` without needing to borrow `self`
@@ -271,8 +309,7 @@ impl<'m> ModuleTaintState<'m> {
         let globals: &Rc<_> = &self.globals; // similarly for the borrow checker - see note on above line
         let cur_fn = self
             .fn_taint_states
-            .entry(&f.name)
-            .or_insert_with(|| {
+            .get_current_or_insert_with(|| {
                 FunctionTaintState::from_taint_map(
                     &f.name,
                     f.parameters
@@ -356,7 +393,7 @@ impl<'m> ModuleTaintState<'m> {
     /// Returns `true` if a change was made to the `FunctionTaintState`, or `false` if not.
     fn process_instruction(&mut self, inst: &'m Instruction) -> Result<bool, String> {
         if inst.is_binary_op() {
-            let cur_fn = self.get_cur_fn();
+            let cur_fn = self.fn_taint_states.get_current();
             let bop: groups::BinaryOp = inst.clone().try_into().unwrap();
             let op0_ty = cur_fn.get_type_of_operand(bop.get_operand0())?;
             let op1_ty = cur_fn.get_type_of_operand(bop.get_operand1())?;
@@ -376,13 +413,13 @@ impl<'m> ModuleTaintState<'m> {
                 | Instruction::Trunc(_)
                 | Instruction::UIToFP(_)
                 | Instruction::ZExt(_) => {
-                    let cur_fn = self.get_cur_fn();
+                    let cur_fn = self.fn_taint_states.get_current();
                     let uop: groups::UnaryOp = inst.clone().try_into().unwrap();
                     let op_ty = cur_fn.get_type_of_operand(uop.get_operand())?;
                     cur_fn.update_var_taintedtype(uop.get_result().clone(), op_ty)
                 },
                 Instruction::BitCast(bc) => {
-                    let cur_fn = self.get_cur_fn();
+                    let cur_fn = self.fn_taint_states.get_current();
                     let from_ty = cur_fn.get_type_of_operand(&bc.operand)?;
                     let result_ty = match &from_ty {
                         TaintedType::UntaintedValue | TaintedType::UntaintedFnPtr => {
@@ -424,10 +461,10 @@ impl<'m> ModuleTaintState<'m> {
                             }
                         },
                     };
-                    self.get_cur_fn().update_var_taintedtype(bc.get_result().clone(), result_ty)
+                    self.fn_taint_states.get_current().update_var_taintedtype(bc.get_result().clone(), result_ty)
                 },
                 Instruction::ExtractElement(ee) => {
-                    let cur_fn = self.get_cur_fn();
+                    let cur_fn = self.fn_taint_states.get_current();
                     let result_ty = if cur_fn.is_scalar_operand_tainted(&ee.index)? {
                         TaintedType::TaintedValue
                     } else {
@@ -436,7 +473,7 @@ impl<'m> ModuleTaintState<'m> {
                     cur_fn.update_var_taintedtype(ee.get_result().clone(), result_ty)
                 },
                 Instruction::InsertElement(ie) => {
-                    let cur_fn = self.get_cur_fn();
+                    let cur_fn = self.fn_taint_states.get_current();
                     let result_ty = if cur_fn.is_scalar_operand_tainted(&ie.index)?
                         || cur_fn.is_scalar_operand_tainted(&ie.element)?
                     {
@@ -448,14 +485,14 @@ impl<'m> ModuleTaintState<'m> {
                 },
                 Instruction::ShuffleVector(sv) => {
                     // Vector operands are still scalars in our type system
-                    let cur_fn = self.get_cur_fn();
+                    let cur_fn = self.fn_taint_states.get_current();
                     let op0_ty = cur_fn.get_type_of_operand(&sv.operand0)?;
                     let op1_ty = cur_fn.get_type_of_operand(&sv.operand1)?;
                     let result_ty = op0_ty.join(&op1_ty)?;
                     cur_fn.update_var_taintedtype(sv.get_result().clone(), result_ty)
                 },
                 Instruction::ExtractValue(ev) => {
-                    let cur_fn = self.get_cur_fn();
+                    let cur_fn = self.fn_taint_states.get_current();
                     let ptr_to_struct =
                         TaintedType::untainted_ptr_to(cur_fn.get_type_of_operand(&ev.aggregate)?);
                     let element_ptr_ty = self.get_element_ptr(&ptr_to_struct, &ev.indices)?;
@@ -463,10 +500,10 @@ impl<'m> ModuleTaintState<'m> {
                         TaintedType::UntaintedPointer(pointee) => pointee.ty().clone(),
                         _ => return Err(format!("ExtractValue: expected get_element_ptr to return an UntaintedPointer here; got {}", element_ptr_ty)),
                     };
-                    self.get_cur_fn().update_var_taintedtype(ev.get_result().clone(), element_ty)
+                    self.fn_taint_states.get_current().update_var_taintedtype(ev.get_result().clone(), element_ty)
                 },
                 Instruction::InsertValue(iv) => {
-                    let cur_fn = self.get_cur_fn();
+                    let cur_fn = self.fn_taint_states.get_current();
                     let mut aggregate = cur_fn.get_type_of_operand(&iv.aggregate)?;
                     let element_to_insert = cur_fn.get_type_of_operand(&iv.element)?;
                     insert_value_into_struct(
@@ -477,7 +514,7 @@ impl<'m> ModuleTaintState<'m> {
                     cur_fn.update_var_taintedtype(iv.get_result().clone(), aggregate)
                 },
                 Instruction::Alloca(alloca) => {
-                    let cur_fn = self.get_cur_fn();
+                    let cur_fn = self.fn_taint_states.get_current();
                     let result_ty = if cur_fn.is_scalar_operand_tainted(&alloca.num_elements)? {
                         TaintedType::TaintedValue
                     } else {
@@ -488,26 +525,26 @@ impl<'m> ModuleTaintState<'m> {
                     cur_fn.update_var_taintedtype(alloca.get_result().clone(), result_ty)
                 },
                 Instruction::Load(load) => {
-                    let cur_fn = self.get_cur_fn();
+                    let cur_fn = self.fn_taint_states.get_current();
                     let addr_ty = cur_fn.get_type_of_operand(&load.address)?;
                     let result_ty = self.get_load_result_ty(&addr_ty)?;
-                    self.get_cur_fn().update_var_taintedtype(load.get_result().clone(), result_ty)
+                    self.fn_taint_states.get_current().update_var_taintedtype(load.get_result().clone(), result_ty)
                 },
                 Instruction::Store(store) => {
-                    let cur_fn = self.get_cur_fn();
+                    let cur_fn = self.fn_taint_states.get_current();
                     let mut addr_ty = cur_fn.get_type_of_operand(&store.address)?;
                     let new_value_ty = cur_fn.get_type_of_operand(&store.value)?;
                     self.process_store(&new_value_ty, &mut addr_ty)
                 },
                 Instruction::Fence(_) => Ok(false),
                 Instruction::GetElementPtr(gep) => {
-                    let cur_fn = self.get_cur_fn();
+                    let cur_fn = self.fn_taint_states.get_current();
                     let ptr = cur_fn.get_type_of_operand(&gep.address)?;
                     let result_ty = self.get_element_ptr(&ptr, &gep.indices)?;
-                    self.get_cur_fn().update_var_taintedtype(gep.get_result().clone(), result_ty)
+                    self.fn_taint_states.get_current().update_var_taintedtype(gep.get_result().clone(), result_ty)
                 },
                 Instruction::PtrToInt(pti) => {
-                    let cur_fn = self.get_cur_fn();
+                    let cur_fn = self.fn_taint_states.get_current();
                     match cur_fn.get_type_of_operand(&pti.operand)? {
                         TaintedType::UntaintedPointer(_) | TaintedType::UntaintedFnPtr => {
                             cur_fn.update_var_taintedtype(pti.get_result().clone(), TaintedType::UntaintedValue)
@@ -537,17 +574,17 @@ impl<'m> ModuleTaintState<'m> {
                     let untainted_ptr_ty = TaintedType::from_llvm_type(&itp.to_type);
                     // all we do is create a tainted pointer from a tainted
                     // value, and an untainted pointer from an untainted value
-                    let cur_fn = self.get_cur_fn();
+                    let cur_fn = self.fn_taint_states.get_current();
                     let in_ty = cur_fn.get_type_of_operand(&itp.operand)?;
                     let ptr_ty = if self.is_type_tainted(&in_ty) {
                         self.to_tainted(&untainted_ptr_ty)
                     } else {
                         untainted_ptr_ty
                     };
-                    self.get_cur_fn().update_var_taintedtype(itp.get_result().clone(), ptr_ty)
+                    self.fn_taint_states.get_current().update_var_taintedtype(itp.get_result().clone(), ptr_ty)
                 },
                 Instruction::ICmp(icmp) => {
-                    let cur_fn = self.get_cur_fn();
+                    let cur_fn = self.fn_taint_states.get_current();
                     let op0_ty = cur_fn.get_type_of_operand(&icmp.operand0)?;
                     let op1_ty = cur_fn.get_type_of_operand(&icmp.operand1)?;
                     let result_ty = if self.is_type_tainted(&op0_ty) || self.is_type_tainted(&op1_ty) {
@@ -555,10 +592,10 @@ impl<'m> ModuleTaintState<'m> {
                     } else {
                         TaintedType::UntaintedValue
                     };
-                    self.get_cur_fn().update_var_taintedtype(icmp.get_result().clone(), result_ty)
+                    self.fn_taint_states.get_current().update_var_taintedtype(icmp.get_result().clone(), result_ty)
                 },
                 Instruction::FCmp(fcmp) => {
-                    let cur_fn = self.get_cur_fn();
+                    let cur_fn = self.fn_taint_states.get_current();
                     let op0_ty = cur_fn.get_type_of_operand(&fcmp.operand0)?;
                     let op1_ty = cur_fn.get_type_of_operand(&fcmp.operand1)?;
                     let result_ty = if self.is_type_tainted(&op0_ty) || self.is_type_tainted(&op1_ty) {
@@ -566,10 +603,10 @@ impl<'m> ModuleTaintState<'m> {
                     } else {
                         TaintedType::UntaintedValue
                     };
-                    self.get_cur_fn().update_var_taintedtype(fcmp.get_result().clone(), result_ty)
+                    self.fn_taint_states.get_current().update_var_taintedtype(fcmp.get_result().clone(), result_ty)
                 },
                 Instruction::Phi(phi) => {
-                    let cur_fn = self.get_cur_fn();
+                    let cur_fn = self.fn_taint_states.get_current();
                     let mut incoming_types = phi
                         .incoming_values
                         .iter()
@@ -583,7 +620,7 @@ impl<'m> ModuleTaintState<'m> {
                     cur_fn.update_var_taintedtype(phi.get_result().clone(), result_ty)
                 },
                 Instruction::Select(select) => {
-                    let cur_fn = self.get_cur_fn();
+                    let cur_fn = self.fn_taint_states.get_current();
                     let result_ty = if cur_fn.is_scalar_operand_tainted(&select.condition)? {
                         TaintedType::TaintedValue
                     } else {
@@ -594,13 +631,13 @@ impl<'m> ModuleTaintState<'m> {
                     cur_fn.update_var_taintedtype(select.get_result().clone(), result_ty)
                 },
                 Instruction::AtomicRMW(rmw) => {
-                    let cur_fn = self.get_cur_fn();
+                    let cur_fn = self.fn_taint_states.get_current();
                     let mut addr_ty = cur_fn.get_type_of_operand(&rmw.address)?;
                     let value_ty = cur_fn.get_type_of_operand(&rmw.value)?;
                     let loaded_ty = self.get_load_result_ty(&addr_ty)?;
                     let ty_to_store = loaded_ty.join(&value_ty)?;
                     self.process_store(&ty_to_store, &mut addr_ty)?;
-                    self.get_cur_fn().update_var_taintedtype(rmw.get_result().clone(), loaded_ty)
+                    self.fn_taint_states.get_current().update_var_taintedtype(rmw.get_result().clone(), loaded_ty)
                 },
                 Instruction::Call(call) => {
                     match &call.function {
@@ -615,7 +652,7 @@ impl<'m> ModuleTaintState<'m> {
                                     Ok(false) // these are all safe to ignore
                                 } else if name.starts_with("llvm.memset") {
                                     // update the address type as appropriate, just like for Store
-                                    let cur_fn = self.get_cur_fn();
+                                    let cur_fn = self.fn_taint_states.get_current();
                                     let address_operand = call.arguments.get(0).map(|(op, _)| op).ok_or_else(|| format!("Expected llvm.memset to have at least three arguments, but it has {}", call.arguments.len()))?;
                                     let value_operand = call.arguments.get(1).map(|(op, _)| op).ok_or_else(|| format!("Expected llvm.memset to have at least three arguments, but it has {}", call.arguments.len()))?;
                                     let address_ty = cur_fn.get_type_of_operand(address_operand)?;
@@ -650,7 +687,7 @@ impl<'m> ModuleTaintState<'m> {
                                             None => Ok(false),
                                             Some(dest) => {
                                                 let untainted_ret_ty = TaintedType::from_llvm_type(&self.module.type_of(call));
-                                                self.get_cur_fn().update_var_taintedtype(dest.clone(), untainted_ret_ty)
+                                                self.fn_taint_states.get_current().update_var_taintedtype(dest.clone(), untainted_ret_ty)
                                             },
                                         }
                                     },
@@ -660,12 +697,12 @@ impl<'m> ModuleTaintState<'m> {
                                             Some(dest) => {
                                                 let untainted_ret_ty = TaintedType::from_llvm_type(&self.module.type_of(call));
                                                 let tainted_ret_ty = self.to_tainted(&untainted_ret_ty);
-                                                self.get_cur_fn().update_var_taintedtype(dest.clone(), tainted_ret_ty)
+                                                self.fn_taint_states.get_current().update_var_taintedtype(dest.clone(), tainted_ret_ty)
                                             },
                                         }
                                     },
                                     ExternalFunctionHandling::PropagateTaintShallow => {
-                                        let cur_fn = self.get_cur_fn();
+                                        let cur_fn = self.fn_taint_states.get_current();
                                         if call
                                             .arguments
                                             .iter()
@@ -680,7 +717,7 @@ impl<'m> ModuleTaintState<'m> {
                                                 Some(dest) => {
                                                     let untainted_ret_ty = TaintedType::from_llvm_type(&self.module.type_of(call));
                                                     let tainted_ret_ty = self.to_tainted(&untainted_ret_ty);
-                                                    self.get_cur_fn().update_var_taintedtype(dest.clone(), tainted_ret_ty)
+                                                    self.fn_taint_states.get_current().update_var_taintedtype(dest.clone(), tainted_ret_ty)
                                                 },
                                             }
                                         } else {
@@ -689,7 +726,7 @@ impl<'m> ModuleTaintState<'m> {
                                                 None => Ok(false),
                                                 Some(dest) => {
                                                     let untainted_ret_ty = TaintedType::from_llvm_type(&self.module.type_of(call));
-                                                    self.get_cur_fn().update_var_taintedtype(dest.clone(), untainted_ret_ty)
+                                                    self.fn_taint_states.get_current().update_var_taintedtype(dest.clone(), untainted_ret_ty)
                                                 },
                                             }
                                         }
@@ -775,7 +812,7 @@ impl<'m> ModuleTaintState<'m> {
                 // specifically, update the pointee in that address type:
                 // e.g., if we're storing a tainted value, we want
                 // to update the address type to "pointer to tainted"
-                self.get_cur_fn().update_pointee_taintedtype(pointee, value)
+                self.fn_taint_states.get_current().update_pointee_taintedtype(pointee, value)
             },
         }
     }
@@ -803,15 +840,7 @@ impl<'m> ModuleTaintState<'m> {
         };
         // use the `TaintedType`s of the provided arguments to update the
         // `TaintedType`s of the parameters in the function summary, if appropriate
-        let cur_fn = {
-            // have to inline self.get_cur_fn() here to convince the borrow checker
-            // that we only need to borrow self.fn_taint_states and not all of self,
-            // so the concurrent (mutable) borrow of self.fn_summaries is OK.
-            let cur_fn_name: &str = self.cur_fn.clone();
-            self.fn_taint_states
-                .get(cur_fn_name)
-                .unwrap_or_else(|| panic!("no taint state found for function {:?}", cur_fn_name,))
-        };
+        let cur_fn = self.fn_taint_states.get_current();
         let arg_types = call
             .arguments
             .iter()
@@ -830,7 +859,6 @@ impl<'m> ModuleTaintState<'m> {
         // and finally, for non-void calls, use the return type in the summary to
         // update the type of the result in this function
         let summary_ret_ty = summary.get_ret_ty().clone(); // this should end the life of `summary` and therefore its mutable borrow of `self.fn_summaries`
-        let cur_fn = self.get_cur_fn();
         match &call.dest {
             Some(varname) => {
                 cur_fn.update_var_taintedtype(varname.clone(), summary_ret_ty.unwrap())
@@ -849,15 +877,7 @@ impl<'m> ModuleTaintState<'m> {
                         Ok(false)
                     },
                     Some(summary) => {
-                        let cur_fn = {
-                            // have to inline self.get_cur_fn() here to convince the borrow checker
-                            // that we only need to borrow self.fn_taint_states and not all of self,
-                            // so the concurrent (mutable) borrow of self.fn_summaries is OK.
-                            let cur_fn_name: &str = self.cur_fn.clone();
-                            self.fn_taint_states.get(cur_fn_name).unwrap_or_else(|| {
-                                panic!("no taint state found for function {:?}", cur_fn_name,)
-                            })
-                        };
+                        let cur_fn = self.fn_taint_states.get_current();
                         let ty = ret
                             .return_operand
                             .as_ref()
