@@ -38,6 +38,21 @@ impl<'m> TaintResult<'m> {
         self.fn_taint_states.keys()
     }
 
+    /// Get the name of the module containing the given function
+    pub fn get_module_name(&self, fn_name: &str) -> &'m str {
+        self.fn_taint_states
+            .get(fn_name)
+            .unwrap_or_else(|| {
+                panic!(
+                    "get_module_name: function not found: {:?}",
+                    fn_name
+                )
+            })
+            .module
+            .name
+            .as_str()
+    }
+
     /// Is this type one of the tainted types
     pub fn is_type_tainted(&self, ty: &TaintedType) -> bool {
         match ty {
