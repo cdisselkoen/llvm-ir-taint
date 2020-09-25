@@ -26,9 +26,8 @@ pub enum TaintedType {
     /// A struct, with the given element types
     Struct(Vec<Pointee>),
     /// A named struct, with the given name. To get the actual type of the named
-    /// struct's contents, use `get_named_struct_type` in the `ModuleTaintState`
-    /// or `ModuleTaintResult`. (This avoids infinite recursion in
-    /// `TaintedType`.)
+    /// struct's contents, use `get_named_struct_type` in the `TaintState` or
+    /// `TaintResult`. (This avoids infinite recursion in `TaintedType`.)
     NamedStruct(String),
     /// An untainted function pointer
     UntaintedFnPtr,
@@ -118,9 +117,8 @@ impl TaintedType {
     /// named struct type.)
     ///
     /// For a more generic function that works on all types, use
-    /// `TaintedType::is_tainted()` (below),
-    /// `ModuleTaintState::is_type_tainted()` or
-    /// `ModuleTaintResult::is_type_tainted()`.
+    /// `TaintedType::is_tainted()` (below), `TaintState::is_type_tainted()`, or
+    /// `TaintResult::is_type_tainted()`.
     pub fn is_tainted_nonamedstruct(&self) -> bool {
         match self {
             TaintedType::UntaintedValue => false,
@@ -142,8 +140,8 @@ impl TaintedType {
     ///
     /// This function handles all types, including named struct types.
     ///
-    /// Alternately you can also use `ModuleTaintState::is_type_tainted()` or
-    /// `ModuleTaintResult::is_type_tainted()`.
+    /// Alternately you can also use `TaintState::is_type_tainted()` or
+    /// `TaintResult::is_type_tainted()`.
     pub fn is_tainted<'m>(&self, named_structs: Rc<RefCell<NamedStructs<'m>>>, cur_fn: &'m str) -> bool {
         match self {
             TaintedType::NamedStruct(name) => {

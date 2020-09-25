@@ -2,27 +2,27 @@ pub mod config;
 mod function_summary;
 mod function_taint_state;
 mod globals;
-mod module_taint_result;
-mod module_taint_state;
+mod modules;
 mod named_structs;
 mod pointee;
+mod taint_result;
+mod taint_state;
 mod tainted_type;
 mod worklist;
 
 pub use config::Config;
 pub use tainted_type::TaintedType;
 pub use pointee::Pointee;
-pub use module_taint_result::ModuleTaintResult;
+pub use taint_result::TaintResult;
 pub use named_structs::NamedStructInitialDef;
 
-use itertools::Itertools;
 use llvm_ir::{Module, Name};
-use module_taint_state::ModuleTaintState;
+use taint_state::TaintState;
 use std::collections::HashMap;
 
-/// The main function in this module. Given an LLVM module and the name of a
-/// function to analyze, returns a `ModuleTaintResult` with data on that function
-/// and all functions it calls, directly or transitively.
+/// The main function in this module. Given an LLVM module or modules and the
+/// name of a function to analyze, returns a `TaintResult` with data on that
+/// function and all functions it calls, directly or transitively.
 ///
 /// `args`: the `TaintedType` to assign to each argument of the start function.
 /// If this is not provided, all arguments (and everything they point to, etc)
@@ -34,32 +34,15 @@ use std::collections::HashMap;
 /// `TaintedType`s will simply be inferred normally from the argument
 /// `TaintedType`s.
 pub fn do_taint_analysis_on_function<'m>(
-    module: &'m Module,
+    modules: impl IntoIterator<Item = &'m Module>,
     config: &'m Config,
     start_fn_name: &str,
     args: Option<Vec<TaintedType>>,
     nonargs: HashMap<Name, TaintedType>,
     named_structs: HashMap<String, NamedStructInitialDef>,
-) -> ModuleTaintResult<'m> {
-    let f = module.get_func_by_name(start_fn_name).unwrap_or_else(|| {
-        panic!(
-            "Failed to find function named {:?} in the given module",
-            start_fn_name
-        )
-    });
-    let mut initial_taintmap = nonargs;
-    if let Some(args) = args {
-        for (name, ty) in f
-            .parameters
-            .iter()
-            .map(|p| p.name.clone())
-            .zip_eq(args.into_iter())
-        {
-            initial_taintmap.insert(name, ty);
-        }
-    }
-    ModuleTaintState::do_analysis_single_function(module, config, &f.name, initial_taintmap, named_structs)
-        .into_module_taint_result()
+) -> TaintResult<'m> {
+    TaintState::do_analysis_single_function(modules, config, start_fn_name, args, nonargs, named_structs)
+        .into_taint_result()
 }
 
 /// Like `do_taint_analysis_on_function`, but analyzes all functions in the
@@ -76,26 +59,12 @@ pub fn do_taint_analysis_on_function<'m>(
 /// not specified this way will simply be inferred normally from the argument
 /// `TaintedType`s.
 pub fn do_taint_analysis_on_module<'m>(
-    module: &'m Module,
+    modules: impl IntoIterator<Item = &'m Module>,
     config: &'m Config,
     args: HashMap<&'m str, Vec<TaintedType>>,
     nonargs: HashMap<&'m str, HashMap<Name, TaintedType>>,
     named_structs: HashMap<String, NamedStructInitialDef>,
-) -> ModuleTaintResult<'m> {
-    let mut initial_fn_taint_maps = nonargs;
-    for (funcname, argtypes) in args.into_iter() {
-        let func = module.get_func_by_name(&funcname).unwrap_or_else(|| {
-            panic!(
-                "Failed to find function named {:?} in the given module",
-                funcname
-            );
-        });
-        let initial_fn_taint_map: &mut HashMap<Name, TaintedType> = initial_fn_taint_maps.entry(funcname.clone()).or_default();
-        for (name, ty) in func.parameters.iter().map(|p| p.name.clone()).zip_eq(argtypes.into_iter()) {
-            initial_fn_taint_map.insert(name, ty);
-        }
-    }
-    let module_fns = module.functions.iter().map(|f| f.name.as_str());
-    ModuleTaintState::do_analysis_multiple_functions(module, config, module_fns, initial_fn_taint_maps, named_structs)
-        .into_module_taint_result()
+) -> TaintResult<'m> {
+    TaintState::do_analysis_multiple_functions(modules, config, args, nonargs, named_structs)
+        .into_taint_result()
 }

@@ -18,19 +18,20 @@ fn while_loop() {
     init_logging();
     let funcname = "while_loop";
     let module = get_module();
+    let modules = [module];
     let config = Config::default();
 
     // Mark %8 tainted, manually. This should mean that although %7 was marked
     // untainted on the first pass, at fixpoint it should be marked tainted.
-    let mtr = do_taint_analysis_on_function(
-        &module,
+    let taint_result = do_taint_analysis_on_function(
+        &modules,
         &config,
         funcname,
         Some(vec![TaintedType::UntaintedValue]),
         std::iter::once((Name::from(8), TaintedType::TaintedValue)).collect(),
         HashMap::new(),
     );
-    let taintmap = mtr.get_function_taint_map(funcname);
+    let taintmap = taint_result.get_function_taint_map(funcname);
     assert_eq!(
         taintmap.get(&Name::from(7)),
         Some(&TaintedType::TaintedValue)
@@ -42,19 +43,20 @@ fn for_loop() {
     init_logging();
     let funcname = "for_loop";
     let module = get_module();
+    let modules = [module];
     let config = Config::default();
 
     // Mark %12 tainted, manually. This should mean that %8 (the return value)
     // ends up tainted at fixpoint.
-    let mtr = do_taint_analysis_on_function(
-        &module,
+    let taint_result = do_taint_analysis_on_function(
+        &modules,
         &config,
         funcname,
         Some(vec![TaintedType::UntaintedValue]),
         std::iter::once((Name::from(12), TaintedType::TaintedValue)).collect(),
         HashMap::new(),
     );
-    let taintmap = mtr.get_function_taint_map(funcname);
+    let taintmap = taint_result.get_function_taint_map(funcname);
     assert_eq!(
         taintmap.get(&Name::from(8)),
         Some(&TaintedType::TaintedValue)
@@ -66,6 +68,7 @@ fn loop_with_cond() {
     init_logging();
     let funcname = "loop_with_cond";
     let module = get_module();
+    let modules = [module];
     let config = Config::default();
 
     // This tests that tainted control flow works properly.
@@ -76,15 +79,15 @@ fn loop_with_cond() {
     // Likewise, again due to tainted control flow, the value stored to %3 in
     // block %16 should be tainted, so the value loaded into (for instance) %17
     // should also be marked tainted.
-    let mtr = do_taint_analysis_on_function(
-        &module,
+    let taint_result = do_taint_analysis_on_function(
+        &modules,
         &config,
         funcname,
         Some(vec![TaintedType::TaintedValue]),
         HashMap::new(),
         HashMap::new(),
     );
-    let taintmap = mtr.get_function_taint_map(funcname);
+    let taintmap = taint_result.get_function_taint_map(funcname);
     for (name, ty) in taintmap {
         println!("{}: {}", name, ty);
     }
@@ -111,20 +114,21 @@ fn loop_over_array() {
     init_logging();
     let funcname = "loop_over_array";
     let module = get_module();
+    let modules = [module];
     let config = Config::default();
 
     // Tainting %12 should be sufficient to taint %8 on a subsequent pass, and
     // %11 should be marked as pointer-to-tainted.
     // Then, the final return value %6 should also be marked tainted.
-    let mtr = do_taint_analysis_on_function(
-        &module,
+    let taint_result = do_taint_analysis_on_function(
+        &modules,
         &config,
         funcname,
         Some(vec![TaintedType::UntaintedValue]),
         std::iter::once((Name::from(12), TaintedType::TaintedValue)).collect(),
         HashMap::new(),
     );
-    let taintmap = mtr.get_function_taint_map(funcname);
+    let taintmap = taint_result.get_function_taint_map(funcname);
     assert_eq!(
         taintmap.get(&Name::from(8)),
         Some(&TaintedType::TaintedValue)

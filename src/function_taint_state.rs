@@ -19,13 +19,13 @@ pub struct FunctionTaintState<'m> {
     /// Set of basic blocks that have tainted terminators (e.g., the branch
     /// condition is tainted). Unconditional branches are never tainted.
     tainted_terminators: HashSet<Name>,
-    /// Reference to the llvm-ir `Module`
+    /// Reference to the llvm-ir `Module` containing this function
     module: &'m Module,
-    /// Reference to the module's named struct types
+    /// Reference to the `TaintState`'s named struct types
     pub(crate) named_structs: Rc<RefCell<NamedStructs<'m>>>,
-    /// Reference to the module's globals
+    /// Reference to the `TaintState`'s globals
     pub(crate) globals: Rc<RefCell<Globals<'m>>>,
-    /// Reference to the module's worklist
+    /// Reference to the `TaintState`'s worklist
     pub(crate) worklist: Rc<RefCell<Worklist<'m>>>,
 }
 

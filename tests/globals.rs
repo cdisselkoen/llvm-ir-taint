@@ -18,19 +18,20 @@ fn globals() {
     init_logging();
     let funcname = "dont_confuse_globals";
     let module = get_module();
+    let modules = [module];
     let config = Config::default();
 
     // Tainting the input should cause the output to be tainted, after being
     // written into the global and then read back out
-    let mtr = do_taint_analysis_on_function(
-        &module,
+    let taint_result = do_taint_analysis_on_function(
+        &modules,
         &config,
         funcname,
         Some(vec![TaintedType::TaintedValue]),
         HashMap::new(),
         HashMap::new(),
     );
-    let taintmap = mtr.get_function_taint_map(funcname);
+    let taintmap = taint_result.get_function_taint_map(funcname);
     assert_eq!(
         taintmap.get(&Name::from(4)),
         Some(&TaintedType::TaintedValue)

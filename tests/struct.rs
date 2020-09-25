@@ -32,19 +32,20 @@ fn one_struct_element() {
     init_logging();
     let funcname = "one_int";
     let module = get_module();
+    let modules = [module];
     let config = Config::default();
 
     // Tainting the input should cause the output to be tainted, after being
     // written into the struct field and then read back out
-    let mtr = do_taint_analysis_on_function(
-        &module,
+    let taint_result = do_taint_analysis_on_function(
+        &modules,
         &config,
         funcname,
         Some(vec![TaintedType::TaintedValue]),
         std::iter::once((Name::from(8), TaintedType::TaintedValue)).collect(),
         HashMap::new(),
     );
-    let taintmap = mtr.get_function_taint_map(funcname);
+    let taintmap = taint_result.get_function_taint_map(funcname);
     assert_eq!(
         taintmap.get(&Name::from(9)),
         Some(&TaintedType::TaintedValue)
@@ -56,21 +57,22 @@ fn two_struct_elements() {
     init_logging();
     let funcname = "two_ints_second";
     let module = get_module();
+    let modules = [module];
     let config = Config::default();
 
     // Tainting the input should cause the output to be tainted, just as in the
     // above test.
     // This time we check the type of %3 to ensure that the first field wasn't
     // tainted, only the second
-    let mtr = do_taint_analysis_on_function(
-        &module,
+    let taint_result = do_taint_analysis_on_function(
+        &modules,
         &config,
         funcname,
         Some(vec![TaintedType::TaintedValue]),
         HashMap::new(),
         HashMap::new(),
     );
-    let taintmap = mtr.get_function_taint_map(funcname);
+    let taintmap = taint_result.get_function_taint_map(funcname);
     assert_eq!(
         taintmap.get(&Name::from(9)),
         Some(&TaintedType::TaintedValue)
@@ -80,7 +82,7 @@ fn two_struct_elements() {
         Some(&TaintedType::untainted_ptr_to(TaintedType::NamedStruct("struct.TwoInts".into())))
     );
     assert_eq!(
-        mtr.get_named_struct_type("struct.TwoInts"),
+        taint_result.get_named_struct_type("struct.TwoInts"),
         &TaintedType::struct_of(vec![
             TaintedType::UntaintedValue,
             TaintedType::TaintedValue,
@@ -93,19 +95,20 @@ fn zero_initialize() {
     init_logging();
     let funcname = "zero_initialize";
     let module = get_module();
+    let modules = [module];
     let config = Config::default();
 
     // With tainted input, we should have tainted output, but none of the struct
     // fields should be tainted, and neither should %21
-    let mtr = do_taint_analysis_on_function(
-        &module,
+    let taint_result = do_taint_analysis_on_function(
+        &modules,
         &config,
         funcname,
         Some(vec![TaintedType::TaintedValue]),
         HashMap::new(),
         HashMap::new(),
     );
-    let taintmap = mtr.get_function_taint_map(funcname);
+    let taintmap = taint_result.get_function_taint_map(funcname);
     assert_eq!(
         taintmap.get(&Name::from(26)),
         Some(&TaintedType::TaintedValue),
@@ -115,7 +118,7 @@ fn zero_initialize() {
         Some(&TaintedType::untainted_ptr_to(TaintedType::NamedStruct("struct.ThreeInts".into())))
     );
     assert_eq!(
-        mtr.get_named_struct_type("struct.ThreeInts"),
+        taint_result.get_named_struct_type("struct.ThreeInts"),
         &TaintedType::struct_of(vec![
             TaintedType::UntaintedValue,
             TaintedType::UntaintedValue,
@@ -132,18 +135,19 @@ fn zero_initialize() {
 fn nested_struct() {
     init_logging();
     let module = get_module();
+    let modules = [module];
     let config = Config::default();
 
     // For nested_first, we just check that tainted input results in tainted output
-    let mtr = do_taint_analysis_on_function(
-        &module,
+    let taint_result = do_taint_analysis_on_function(
+        &modules,
         &config,
         "nested_first",
         Some(vec![TaintedType::TaintedValue]),
         HashMap::new(),
         HashMap::new(),
     );
-    let taintmap = mtr.get_function_taint_map("nested_first");
+    let taintmap = taint_result.get_function_taint_map("nested_first");
     assert_eq!(
         taintmap.get(&Name::from(16)),
         Some(&TaintedType::TaintedValue),
@@ -152,15 +156,15 @@ fn nested_struct() {
     // For nested_all, we let the first argument be untainted and the second tainted.
     // We expect that n.mm.el1, i.e. %26 and %38, remains untainted, while the
     // final output is tainted.
-    let mtr = do_taint_analysis_on_function(
-        &module,
+    let taint_result = do_taint_analysis_on_function(
+        &modules,
         &config,
         "nested_all",
         Some(vec![TaintedType::UntaintedValue, TaintedType::TaintedValue]),
         HashMap::new(),
         HashMap::new(),
     );
-    let taintmap = mtr.get_function_taint_map("nested_all");
+    let taintmap = taint_result.get_function_taint_map("nested_all");
     assert_eq!(
         taintmap.get(&Name::from(26)),
         Some(&TaintedType::UntaintedValue),
@@ -180,24 +184,25 @@ fn with_array() {
     init_logging();
     let funcname = "with_array";
     let module = get_module();
+    let modules = [module];
     let config = Config::default();
 
     // We check the inferred TaintedType for the struct, %3, given tainted input
-    let mtr = do_taint_analysis_on_function(
-        &module,
+    let taint_result = do_taint_analysis_on_function(
+        &modules,
         &config,
         funcname,
         Some(vec![TaintedType::TaintedValue]),
         HashMap::new(),
         HashMap::new(),
     );
-    let taintmap = mtr.get_function_taint_map(funcname);
+    let taintmap = taint_result.get_function_taint_map(funcname);
     assert_eq!(
         taintmap.get(&Name::from(3)),
         Some(&TaintedType::untainted_ptr_to(TaintedType::NamedStruct("struct.WithArray".into())))
     );
     assert_eq!(
-        mtr.get_named_struct_type("struct.WithArray"),
+        taint_result.get_named_struct_type("struct.WithArray"),
         &TaintedType::struct_of(vec![
             TaintedType::NamedStruct("struct.Mismatched".into()),
             TaintedType::array_or_vec_of(TaintedType::TaintedValue),
@@ -205,7 +210,7 @@ fn with_array() {
         ])
     );
     assert_eq!(
-        mtr.get_named_struct_type("struct.Mismatched"),
+        taint_result.get_named_struct_type("struct.Mismatched"),
         &TaintedType::struct_of(vec![
             TaintedType::UntaintedValue,
             TaintedType::UntaintedValue,
@@ -218,33 +223,34 @@ fn with_array() {
 fn structptr() {
     init_logging();
     let module = get_module();
+    let modules = [module];
     let config = Config::default();
 
     // For these two functions, we just check that tainted input causes tainted output
 
-    let mtr = do_taint_analysis_on_function(
-        &module,
+    let taint_result = do_taint_analysis_on_function(
+        &modules,
         &config,
         "structptr",
         Some(vec![TaintedType::TaintedValue]),
         HashMap::new(),
         HashMap::new(),
     );
-    let taintmap = mtr.get_function_taint_map("structptr");
+    let taintmap = taint_result.get_function_taint_map("structptr");
     assert_eq!(
         taintmap.get(&Name::from(21)),
         Some(&TaintedType::TaintedValue)
     );
 
-    let mtr = do_taint_analysis_on_function(
-        &module,
+    let taint_result = do_taint_analysis_on_function(
+        &modules,
         &config,
         "structelptr",
         Some(vec![TaintedType::TaintedValue]),
         HashMap::new(),
         HashMap::new(),
     );
-    let taintmap = mtr.get_function_taint_map("structelptr");
+    let taintmap = taint_result.get_function_taint_map("structelptr");
     assert_eq!(
         taintmap.get(&Name::from(16)),
         Some(&TaintedType::TaintedValue)
@@ -256,26 +262,27 @@ fn changeptr() {
     init_logging();
     let funcname = "changeptr";
     let module = get_module();
+    let modules = [module];
     let config = Config::default();
 
     // For this function, given tainted input, we check that the final inferred
     // TaintedType for ti is a pointer to a ThreeInts with the second element
     // tainted
-    let mtr = do_taint_analysis_on_function(
-        &module,
+    let taint_result = do_taint_analysis_on_function(
+        &modules,
         &config,
         funcname,
         Some(vec![TaintedType::TaintedValue]),
         HashMap::new(),
         HashMap::new(),
     );
-    let taintmap = mtr.get_function_taint_map(funcname);
+    let taintmap = taint_result.get_function_taint_map(funcname);
     assert_eq!(
         taintmap.get(&Name::from(5)),
         Some(&TaintedType::untainted_ptr_to(TaintedType::untainted_ptr_to(TaintedType::NamedStruct("struct.ThreeInts".into())))),
     );
     assert_eq!(
-        mtr.get_named_struct_type("struct.ThreeInts"),
+        taint_result.get_named_struct_type("struct.ThreeInts"),
         &TaintedType::struct_of(vec![
             TaintedType::UntaintedValue,
             TaintedType::TaintedValue,
@@ -289,6 +296,7 @@ fn with_ptr() {
     init_logging();
     let funcname = "with_ptr";
     let module = get_O3_module();
+    let modules = [module];
     let mut config = Config::default();
     config.ext_functions.insert("malloc".into(), ExternalFunctionHandling::IgnoreAndReturnUntainted);
 
@@ -296,8 +304,8 @@ fn with_ptr() {
     // TaintedType for struct TwoInts is (untainted, tainted)
     // and that the final inferred TaintedType for struct WithPointer has the
     // appropriate structure
-    let mtr = do_taint_analysis_on_function(
-        &module,
+    let taint_result = do_taint_analysis_on_function(
+        &modules,
         &config,
         funcname,
         Some(vec![TaintedType::TaintedValue]),
@@ -305,14 +313,14 @@ fn with_ptr() {
         HashMap::new(),
     );
     assert_eq!(
-        mtr.get_named_struct_type("struct.TwoInts"),
+        taint_result.get_named_struct_type("struct.TwoInts"),
         &TaintedType::struct_of(vec![
             TaintedType::UntaintedValue,
             TaintedType::TaintedValue,
         ]),
     );
     assert_eq!(
-        mtr.get_named_struct_type("struct.WithPointer"),
+        taint_result.get_named_struct_type("struct.WithPointer"),
         &TaintedType::struct_of(vec![
             TaintedType::NamedStruct("struct.TwoInts".into()),
             TaintedType::untainted_ptr_to(TaintedType::untainted_ptr_to(TaintedType::NamedStruct("struct.TwoInts".into()))),
@@ -325,6 +333,7 @@ fn addl_structtest() {
     init_logging();
     let funcname = "caller";
     let module = get_addl_module();
+    let modules = [module];
     let config = Config::default();
 
     // For this function, given tainted input, we check that the final inferred
@@ -332,8 +341,8 @@ fn addl_structtest() {
     // and that the final type for %8 in caller() is tainted
     // Importantly, this requires that the change to struct.ThreeInts' type made
     // in called() actually puts caller() back on the worklist
-    let mtr = do_taint_analysis_on_function(
-        &module,
+    let taint_result = do_taint_analysis_on_function(
+        &modules,
         &config,
         funcname,
         Some(vec![TaintedType::TaintedValue]),
@@ -341,7 +350,7 @@ fn addl_structtest() {
         HashMap::new(),
     );
     assert_eq!(
-        mtr.get_named_struct_type("struct.ThreeInts"),
+        taint_result.get_named_struct_type("struct.ThreeInts"),
         &TaintedType::struct_of(vec![
             TaintedType::TaintedValue,
             TaintedType::UntaintedValue,
@@ -349,7 +358,7 @@ fn addl_structtest() {
         ]),
     );
     assert_eq!(
-        mtr.get_function_taint_map("caller").get(&Name::Number(8)),
+        taint_result.get_function_taint_map("caller").get(&Name::Number(8)),
         Some(&TaintedType::TaintedValue),
     );
 }

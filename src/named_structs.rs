@@ -1,11 +1,11 @@
+use crate::modules::Modules;
 use crate::tainted_type::TaintedType;
-use llvm_ir::{Constant, ConstantRef, Module, Operand};
+use llvm_ir::{Constant, ConstantRef, Operand};
 use llvm_ir::types::NamedStructDef;
 use log::warn;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
-#[derive(Clone)]
 pub struct NamedStructs<'m> {
     /// Map from the name of a named struct, to the (currently believed) type for
     /// that struct's contents.
@@ -25,8 +25,8 @@ pub struct NamedStructs<'m> {
     /// types in those functions.
     named_struct_users: HashMap<String, HashSet<&'m str>>,
 
-    /// Reference to the llvm-ir `Module`
-    module: &'m Module,
+    /// The `Modules` being analyzed
+    modules: Modules<'m>,
 }
 
 /// Describes the initial definition (taint state) of a named struct.
@@ -92,34 +92,34 @@ impl TaintedNamedStructs {
 
 impl<'m> NamedStructs<'m> {
     /// Construct a new `NamedStructs` with implicitly the default (untainted)
-    /// `TaintedType` for all named structs in the `Module`
-    pub fn new(module: &'m Module) -> Self {
+    /// `TaintedType` for all named structs in the `Modules`
+    pub fn new(modules: Modules<'m>) -> Self {
         Self {
             named_struct_types: HashMap::new(),
             tainted_named_structs: TaintedNamedStructs(HashSet::new()),
             named_struct_users: HashMap::new(),
-            module,
+            modules,
         }
     }
 
     /// Construct a new `NamedStructs`, with the given `NamedStructInitialDef`s
-    /// for some named structs in the `Module`. Structs not given in `defs` are
+    /// for some named structs in the `Modules`. Structs not given in `defs` are
     /// implicitly `NamedStructInitialDef::AllFieldsUntainted`.
-    pub fn with_initial_defs(module: &'m Module, defs: HashMap<String, NamedStructInitialDef>) -> Self {
+    pub fn with_initial_defs(modules: Modules<'m>, defs: HashMap<String, NamedStructInitialDef>) -> Self {
         use NamedStructInitialDef::*;
         let mut named_struct_types: HashMap<String, TaintedType> = HashMap::new();
         let mut tainted_named_structs = TaintedNamedStructs(HashSet::new());
         for (structname, initialdef) in defs.into_iter() {
-            match (initialdef, module.types.named_struct_def(&structname)) {
-                (_, None) => panic!("Struct name {:?} not found in the Module", structname),
+            match (initialdef, modules.named_struct_def(&structname)) {
+                (_, None) => panic!("Struct name {:?} not found in the Module(s)", structname),
                 (AllFieldsUntainted, _) => {},
-                (AllFieldsTainted, Some(NamedStructDef::Opaque)) => {
+                (AllFieldsTainted, Some((NamedStructDef::Opaque, _))) => {
                     warn!("NamedStructInitialDef::AllFieldsTainted on an opaque struct. Not adding a definition, but we shouldn't ever need a definition for an opaque struct, so this entry will be ignored.");
                 },
-                (AllFieldsTainted, Some(NamedStructDef::Defined(_))) => {
+                (AllFieldsTainted, Some((NamedStructDef::Defined(_), _))) => {
                     tainted_named_structs.insert(structname);
                 },
-                (InitialDef(structty), Some(structdef)) => {
+                (InitialDef(structty), Some((structdef, _))) => {
                     match structty {
                         TaintedType::Struct(_) => {},
                         _ => panic!("Supplied initial type for struct {:?} should be a TaintedType::Struct variant, but got {:?}", structname, structty),
@@ -144,7 +144,7 @@ impl<'m> NamedStructs<'m> {
             named_struct_types,
             tainted_named_structs,
             named_struct_users: HashMap::new(),
-            module,
+            modules,
         }
     }
 
@@ -159,16 +159,16 @@ impl<'m> NamedStructs<'m> {
     /// Creates an untainted `TaintedType` for this named struct if no type
     /// previously existed for it.
     pub fn get_named_struct_type(&mut self, struct_name: String, cur_fn: &'m str) -> &TaintedType {
-        let module = self.module; // this is for the borrow checker - allows us to access `module` without needing to borrow `self`
+        let modules = &self.modules; // this is for the borrow checker - allows us to access `modules` without needing to borrow `self`
         self.named_struct_users.entry(struct_name.clone()).or_default().insert(cur_fn.into());
         let def = self.named_struct_types.entry(struct_name.clone()).or_insert_with(|| {
-            match module.types.named_struct_def(&struct_name) {
+            match modules.named_struct_def(&struct_name) {
                 None => panic!("get_named_struct_type on unknown named struct: name {:?}", &struct_name),
-                Some(NamedStructDef::Opaque) => panic!(
+                Some((NamedStructDef::Opaque, _)) => panic!(
                     "get_named_struct_type on an opaque struct named {:?}",
                     &struct_name
                 ),
-                Some(NamedStructDef::Defined(ty)) => TaintedType::from_llvm_type(&ty),
+                Some((NamedStructDef::Defined(ty), _)) => TaintedType::from_llvm_type(&ty),
             }
         });
         if self.tainted_named_structs.contains(&struct_name) {
@@ -215,7 +215,7 @@ impl<'m> NamedStructs<'m> {
     /// This may have side effects, such as permanently marking struct fields or
     /// pointees as tainted.
     ///
-    /// Alternately you can also use `ModuleTaintState::to_tainted()`.
+    /// Alternately you can also use `TaintState::to_tainted()`.
     pub fn to_tainted(&mut self, ty: &TaintedType) -> TaintedType {
         self.tainted_named_structs.to_tainted(ty)
     }
@@ -381,7 +381,7 @@ impl<'m> NamedStructs<'m> {
 
 impl<'m> fmt::Debug for NamedStructs<'m> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{{NamedStructs for module {:?}, with {} definitions}}", &self.module.name, self.named_struct_types.keys().count())
+        write!(f, "{{NamedStructs with {} definitions}}", self.named_struct_types.keys().count())
     }
 }
 

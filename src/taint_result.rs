@@ -3,8 +3,8 @@ use crate::tainted_type::TaintedType;
 use llvm_ir::Name;
 use std::collections::HashMap;
 
-/// The result of taint-tracking analysis on an LLVM module
-pub struct ModuleTaintResult<'m> {
+/// The result of taint-tracking analysis on LLVM module(s)
+pub struct TaintResult<'m> {
     /// Map from function name to the `FunctionTaintState` for that function
     pub(crate) fn_taint_states: HashMap<&'m str, FunctionTaintState<'m>>,
 
@@ -13,7 +13,7 @@ pub struct ModuleTaintResult<'m> {
     pub(crate) named_struct_types: HashMap<String, TaintedType>,
 }
 
-impl<'m> ModuleTaintResult<'m> {
+impl<'m> TaintResult<'m> {
     /// Given a function name, returns a map from variable name to `TaintedType`
     /// for all the variables in that function.
     pub fn get_function_taint_map(&self, fn_name: &str) -> &HashMap<Name, TaintedType> {

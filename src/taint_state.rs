@@ -2,8 +2,9 @@ use crate::config::{self, Config};
 use crate::function_summary::FunctionSummary;
 use crate::function_taint_state::FunctionTaintState;
 use crate::globals::Globals;
-use crate::module_taint_result::ModuleTaintResult;
+use crate::modules::Modules;
 use crate::named_structs::{Index, NamedStructs, NamedStructInitialDef};
+use crate::taint_result::TaintResult;
 use crate::tainted_type::TaintedType;
 use crate::worklist::Worklist;
 use either::Either;
@@ -19,11 +20,8 @@ use std::convert::TryInto;
 use std::iter::FromIterator;
 use std::rc::Rc;
 
-pub(crate) struct ModuleTaintState<'m> {
-    /// llvm-ir `Module`
-    module: &'m Module,
-
-    /// `Analysis` for this `Module`
+pub(crate) struct TaintState<'m> {
+    /// `Analysis` for the llvm-ir `Module`(s) we're analyzing
     analysis: Analysis<'m>,
 
     /// The configuration for the analysis
@@ -35,10 +33,10 @@ pub(crate) struct ModuleTaintState<'m> {
     /// Map from function name to the `FunctionSummary` for that function
     fn_summaries: HashMap<&'m str, FunctionSummary<'m>>,
 
-    /// Named structs used in the module, and their definitions (taint statuses)
+    /// Named structs used in the module(s), and their definitions (taint statuses)
     named_structs: Rc<RefCell<NamedStructs<'m>>>,
 
-    /// Globals used in the module, and their definitions (taint statuses)
+    /// Globals used in the module(s), and their definitions (taint statuses)
     globals: Rc<RefCell<Globals<'m>>>,
 
     /// Set of functions which need to be processed again because there's been a
@@ -47,6 +45,9 @@ pub(crate) struct ModuleTaintState<'m> {
 
     /// Name of the function currently being processed
     cur_fn: &'m str,
+
+    /// Module of the function currently being processed
+    cur_mod: &'m Module,
 
     /// Name of the block currently being processed, if any
     cur_block: Option<&'m Name>,
@@ -100,32 +101,47 @@ impl<'m> FromIterator<(&'m str, FunctionTaintState<'m>)> for FunctionTaintStates
     }
 }
 
-impl<'m> ModuleTaintState<'m> {
+impl<'m> TaintState<'m> {
     /// Compute the tainted state of all variables using our fixpoint algorithm,
-    /// and return the resulting `ModuleTaintState`.
+    /// and return the resulting `TaintState`.
     ///
-    /// `start_fn`: name of the function to start the analysis in
-    ///
-    /// `start_fn_taint_map`: Map from variable names (in `start_fn`) to the
-    /// initial `TaintedType`s of those variables. May include types for function
-    /// arguments and/or other variables in the function. Any variable not
-    /// included in this map will simply be inferred normally from the other
-    /// variables (defaulting to untainted).
+    /// `start_fn_name`: name of the function to start the analysis in
     pub fn do_analysis_single_function(
-        module: &'m Module,
+        modules: impl IntoIterator<Item = &'m Module>,
         config: &'m Config,
-        start_fn: &'m str,
-        start_fn_taint_map: HashMap<Name, TaintedType>,
+        start_fn_name: &str,
+        args: Option<Vec<TaintedType>>,
+        nonargs: HashMap<Name, TaintedType>,
         named_structs: HashMap<String, NamedStructInitialDef>,
     ) -> Self {
-        let fn_taint_maps = std::iter::once((start_fn.into(), start_fn_taint_map)).collect();
-        let mut mts = Self::new(module, config, std::iter::once(start_fn), fn_taint_maps, named_structs);
-        mts.compute();
-        mts
+        let modules: Modules<'m> = modules.into_iter().collect();
+        let analysis = Analysis::new_multi_module(modules.iter());
+        let (f, _) = analysis.get_func_by_name(start_fn_name).unwrap_or_else(|| {
+            panic!(
+                "Failed to find function named {:?} in the given module(s)",
+                start_fn_name
+            )
+        });
+        let mut initial_taintmap = nonargs;
+        if let Some(args) = args {
+            for (name, ty) in f
+                .parameters
+                .iter()
+                .map(|p| p.name.clone())
+                .zip_eq(args.into_iter())
+            {
+                initial_taintmap.insert(name, ty);
+            }
+        }
+
+        let fn_taint_maps = std::iter::once((f.name.as_str(), initial_taintmap)).collect();
+        let mut ts = Self::new(modules, analysis, config, std::iter::once(f.name.as_str()).collect(), fn_taint_maps, named_structs);
+        ts.compute();
+        ts
     }
 
     /// Compute the tainted state of all variables using our fixpoint algorithm,
-    /// and return the resulting `ModuleTaintState`.
+    /// and return the resulting `TaintState`.
     ///
     /// `start_fns`: name of the functions to start the analysis in
     ///
@@ -134,31 +150,50 @@ impl<'m> ModuleTaintState<'m> {
     /// in one of these maps will simply be inferred normally from the other
     /// variables.
     pub fn do_analysis_multiple_functions(
-        module: &'m Module,
+        modules: impl IntoIterator<Item = &'m Module>,
         config: &'m Config,
-        start_fns: impl IntoIterator<Item = &'m str>,
-        fn_taint_maps: HashMap<&'m str, HashMap<Name, TaintedType>>,
+        args: HashMap<&'m str, Vec<TaintedType>>,
+        nonargs: HashMap<&'m str, HashMap<Name, TaintedType>>,
         named_structs: HashMap<String, NamedStructInitialDef>,
     ) -> Self {
-        let mut mts = Self::new(module, config, start_fns, fn_taint_maps, named_structs);
-        mts.compute();
-        mts
+        let modules: Modules<'m> = modules.into_iter().collect();
+        let analysis = Analysis::new_multi_module(modules.iter());
+        let mut initial_fn_taint_maps = nonargs;
+        for (funcname, argtypes) in args.into_iter() {
+            let (func, _) = analysis.get_func_by_name(&funcname).unwrap_or_else(|| {
+                panic!(
+                    "Failed to find function named {:?} in the given module(s)",
+                    funcname
+                );
+            });
+            let initial_fn_taint_map: &mut HashMap<Name, TaintedType> = initial_fn_taint_maps.entry(funcname.clone()).or_default();
+            for (name, ty) in func.parameters.iter().map(|p| p.name.clone()).zip_eq(argtypes.into_iter()) {
+                initial_fn_taint_map.insert(name, ty);
+            }
+        }
+        let all_fns = modules.all_functions().map(|(f, _)| f.name.as_str());
+        let initial_worklist: Worklist<'m> = all_fns.collect();
+        let mut ts = Self::new(modules, analysis, config, initial_worklist, initial_fn_taint_maps, named_structs);
+        ts.compute();
+        ts
     }
 
     fn new(
-        module: &'m Module,
+        modules: Modules<'m>,
+        analysis: Analysis<'m>,
         config: &'m Config,
-        start_fns: impl IntoIterator<Item = &'m str>,
+        initial_worklist: Worklist<'m>,
         fn_taint_maps: HashMap<&'m str, HashMap<Name, TaintedType>>,
         named_structs: HashMap<String, NamedStructInitialDef>,
     ) -> Self {
-        let analysis = Analysis::new(module);
-        let named_structs = Rc::new(RefCell::new(NamedStructs::with_initial_defs(module, named_structs)));
+        let cur_mod = modules.iter().next().unwrap(); // doesn't matter what `cur_mod` starts as - we shouldn't use it until we set `cur_fn` and `cur_mod` together
+        let named_structs = Rc::new(RefCell::new(NamedStructs::with_initial_defs(modules, named_structs)));
         let globals = Rc::new(RefCell::new(Globals::new()));
-        let worklist = Rc::new(RefCell::new(start_fns.into_iter().collect()));
+        let worklist = Rc::new(RefCell::new(initial_worklist));
         let fn_taint_states = fn_taint_maps
             .into_iter()
             .map(|(s, taintmap)| {
+                let (_, module) = analysis.get_func_by_name(s).expect("Function named {:?} not found");
                 let fts = FunctionTaintState::from_taint_map(
                     &s,
                     taintmap,
@@ -171,7 +206,6 @@ impl<'m> ModuleTaintState<'m> {
             })
             .collect();
         Self {
-            module,
             analysis,
             config,
             fn_taint_states,
@@ -180,12 +214,13 @@ impl<'m> ModuleTaintState<'m> {
             globals,
             worklist,
             cur_fn: "", // we shouldn't use `cur_fn` until it's set to the first one we pop off the worklist
+            cur_mod, // likewise, we shouldn't use `cur_mod` until we set `cur_fn`
             cur_block: None,
         }
     }
 
-    pub(crate) fn into_module_taint_result(self) -> ModuleTaintResult<'m> {
-        ModuleTaintResult {
+    pub(crate) fn into_taint_result(self) -> TaintResult<'m> {
+        TaintResult {
             fn_taint_states: self.fn_taint_states.map,
             named_struct_types: self
                 .named_structs
@@ -217,12 +252,12 @@ impl<'m> ModuleTaintState<'m> {
                 None => break,
             };
             debug!("Popped {:?} from worklist", fn_name);
-            let changed = match self.module.get_func_by_name(fn_name) {
-                Some(func) => {
-                    // internal function (defined in the current module):
+            let changed = match self.analysis.get_func_by_name(fn_name) {
+                Some((func, module)) => {
+                    // internal function (defined in one of the available modules):
                     // process it normally
                     self
-                        .process_function(func)
+                        .process_function(func, module)
                         .unwrap_or_else(|e| panic!("In function {:?}: {}", fn_name, e))
                 },
                 None => {
@@ -254,7 +289,7 @@ impl<'m> ModuleTaintState<'m> {
                             let summary = self.fn_summaries.get_mut(fn_name).unwrap_or_else(|| panic!("Internal invariant violated: External function {:?} on the worklist has no summary", fn_name));
                             // we effectively inline self.is_type_tainted(), in order to prove to the borrow checker that `summary` borrows a different part of `self` than we need for `is_type_tainted()`
                             let mut named_structs = self.named_structs.borrow_mut();
-                            let cur_fn = &self.cur_fn;
+                            let cur_fn = self.cur_fn;
                             if summary.get_params().any(|p| named_structs.is_type_tainted(p, cur_fn)) {
                                 summary.taint_ret()
                             } else {
@@ -298,16 +333,17 @@ impl<'m> ModuleTaintState<'m> {
         self.named_structs.borrow_mut().to_tainted(ty)
     }
 
-    /// Process the given `Function`.
+    /// Process the given `Function` in the given `Module`.
     ///
     /// Returns `true` if a change was made to the function's taint state, or `false` if not.
-    fn process_function(&mut self, f: &'m Function) -> Result<bool, String> {
+    fn process_function(&mut self, f: &'m Function, m: &'m Module) -> Result<bool, String> {
         debug!("Processing function {:?}", &f.name);
         self.cur_fn = &f.name;
+        self.cur_mod = m;
         self.fn_taint_states.set_current_fn(&f.name);
 
         // get the taint state for the current function, creating a new one if necessary
-        let module = self.module; // this is for the borrow checker - allows us to access `module` without needing to borrow `self`
+        let cur_mod = self.cur_mod; // this is for the borrow checker - allows us to access `cur_mod` without needing to borrow `self`
         let named_structs: &Rc<_> = &self.named_structs; // similarly for the borrow checker - see note on above line
         let worklist: &Rc<_> = &self.worklist; // similarly for the borrow checker - see note on above line
         let globals: &Rc<_> = &self.globals; // similarly for the borrow checker - see note on above line
@@ -319,10 +355,10 @@ impl<'m> ModuleTaintState<'m> {
                     f.parameters
                         .iter()
                         .map(|p| {
-                            (p.name.clone(), TaintedType::from_llvm_type(&module.type_of(p)))
+                            (p.name.clone(), TaintedType::from_llvm_type(&cur_mod.type_of(p)))
                         })
                         .collect(),
-                    module,
+                    cur_mod,
                     Rc::clone(named_structs),
                     Rc::clone(globals),
                     Rc::clone(worklist),
@@ -332,7 +368,8 @@ impl<'m> ModuleTaintState<'m> {
         let summary = match self.fn_summaries.entry(&f.name) {
             Entry::Vacant(ventry) => {
                 // no summary: make a starter one, assuming everything is untainted
-                let param_llvm_types = f.parameters.iter().map(|p| module.type_of(p));
+                let cur_mod = self.cur_mod;
+                let param_llvm_types = f.parameters.iter().map(|p| cur_mod.type_of(p));
                 let ret_llvm_type = &f.return_type;
                 ventry.insert(FunctionSummary::new_untainted(
                     param_llvm_types,
@@ -663,7 +700,7 @@ impl<'m> ModuleTaintState<'m> {
                     // I.e., we taint this phi's result if the current block is control-
                     // dependent on a block with tainted terminator, or if any of the incoming
                     // phi blocks are control-dependent on a block with tainted terminator.
-                    let cdg = self.analysis.control_dependence_graph(&self.cur_fn);
+                    let cdg = self.analysis.control_dependence_graph(self.cur_fn);
                     let is_ctrl_dep_on_tainted_term = |block: &'m Name| {
                         cdg.get_control_dependencies(block)
                             .any(|dep| cur_fn.is_terminator_tainted(dep))
@@ -728,21 +765,21 @@ impl<'m> ModuleTaintState<'m> {
                             _ => unimplemented!("Call of a constant function pointer"),
                         },
                         Either::Right(_) => {
-                            let func_ty = self.module.type_of(&call.function);
+                            let func_ty = self.cur_mod.type_of(&call.function);
                             // Assume that this function pointer could point to any function in
-                            // the current module that has the appropriate type
+                            // the analyzed module(s) that has the appropriate type
                             let targets: Vec<&'m str> = self.analysis.functions_by_type().functions_with_type(&func_ty).collect();
                             if targets.is_empty() {
-                                // no valid targets for the function pointer
-                                // in this module; treat this as a call to
-                                // an external function
+                                // no valid targets for the function pointer in
+                                // the analyzed module(s); treat this as a call
+                                // to an external function
                                 use config::ExternalFunctionHandling;
                                 match self.config.ext_functions_default {
                                     ExternalFunctionHandling::IgnoreAndReturnUntainted => {
                                         match &call.dest {
                                             None => Ok(false),
                                             Some(dest) => {
-                                                let untainted_ret_ty = TaintedType::from_llvm_type(&self.module.type_of(call));
+                                                let untainted_ret_ty = TaintedType::from_llvm_type(&self.cur_mod.type_of(call));
                                                 self.fn_taint_states.get_current().update_var_taintedtype(dest.clone(), untainted_ret_ty)
                                             },
                                         }
@@ -751,7 +788,7 @@ impl<'m> ModuleTaintState<'m> {
                                         match &call.dest {
                                             None => Ok(false),
                                             Some(dest) => {
-                                                let untainted_ret_ty = TaintedType::from_llvm_type(&self.module.type_of(call));
+                                                let untainted_ret_ty = TaintedType::from_llvm_type(&self.cur_mod.type_of(call));
                                                 let tainted_ret_ty = self.to_tainted(&untainted_ret_ty);
                                                 self.fn_taint_states.get_current().update_var_taintedtype(dest.clone(), tainted_ret_ty)
                                             },
@@ -771,7 +808,7 @@ impl<'m> ModuleTaintState<'m> {
                                             match &call.dest {
                                                 None => Ok(false),
                                                 Some(dest) => {
-                                                    let untainted_ret_ty = TaintedType::from_llvm_type(&self.module.type_of(call));
+                                                    let untainted_ret_ty = TaintedType::from_llvm_type(&self.cur_mod.type_of(call));
                                                     let tainted_ret_ty = self.to_tainted(&untainted_ret_ty);
                                                     self.fn_taint_states.get_current().update_var_taintedtype(dest.clone(), tainted_ret_ty)
                                                 },
@@ -781,7 +818,7 @@ impl<'m> ModuleTaintState<'m> {
                                             match &call.dest {
                                                 None => Ok(false),
                                                 Some(dest) => {
-                                                    let untainted_ret_ty = TaintedType::from_llvm_type(&self.module.type_of(call));
+                                                    let untainted_ret_ty = TaintedType::from_llvm_type(&self.cur_mod.type_of(call));
                                                     self.fn_taint_states.get_current().update_var_taintedtype(dest.clone(), untainted_ret_ty)
                                                 },
                                             }
@@ -895,7 +932,6 @@ impl<'m> ModuleTaintState<'m> {
         call: &instruction::Call,
         funcname: &'m str,
     ) -> Result<bool, String> {
-        let module = self.module;
         // Get the function summary for the called function
         let summary = match self.fn_summaries.entry(funcname.clone()) {
             Entry::Occupied(oentry) => oentry.into_mut(),
@@ -903,9 +939,10 @@ impl<'m> ModuleTaintState<'m> {
                 // no summary: start with the default one (nothing tainted) and add the
                 // called function to the worklist so that we can compute a better one
                 self.worklist.borrow_mut().add(funcname);
+                let cur_mod = self.cur_mod;
                 ventry.insert(FunctionSummary::new_untainted(
-                    call.arguments.iter().map(|(arg, _)| module.type_of(arg)),
-                    &module.type_of(call),
+                    call.arguments.iter().map(|(arg, _)| cur_mod.type_of(arg)),
+                    &cur_mod.type_of(call),
                     Rc::clone(&self.named_structs),
                 ))
             },
