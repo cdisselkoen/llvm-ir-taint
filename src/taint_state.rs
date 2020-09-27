@@ -258,7 +258,7 @@ impl<'m> TaintState<'m> {
                     // process it normally
                     self
                         .process_function(func, module)
-                        .unwrap_or_else(|e| panic!("In function {:?}: {}", fn_name, e))
+                        .unwrap_or_else(|e| panic!("In module {:?}:\nin function {:?}:\n{}", &module.name, fn_name, e))
                 },
                 None => {
                     // external function (not defined in the current module):
