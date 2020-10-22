@@ -11,7 +11,7 @@ use either::Either;
 use itertools::Itertools;
 use llvm_ir::instruction::{groups, BinaryOp, HasResult, UnaryOp};
 use llvm_ir::*;
-use llvm_ir_analysis::Analysis;
+use llvm_ir_analysis::CrossModuleAnalysis;
 use log::debug;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -21,8 +21,8 @@ use std::iter::FromIterator;
 use std::rc::Rc;
 
 pub(crate) struct TaintState<'m> {
-    /// `Analysis` for the llvm-ir `Module`(s) we're analyzing
-    analysis: Analysis<'m>,
+    /// `CrossModuleAnalysis` for the llvm-ir `Module`(s) we're analyzing
+    analysis: CrossModuleAnalysis<'m>,
 
     /// The configuration for the analysis
     config: &'m Config,
@@ -115,7 +115,7 @@ impl<'m> TaintState<'m> {
         named_structs: HashMap<String, NamedStructInitialDef>,
     ) -> Self {
         let modules: Modules<'m> = modules.into_iter().collect();
-        let analysis = Analysis::new_multi_module(modules.iter());
+        let analysis = CrossModuleAnalysis::new(modules.iter());
         let (f, _) = analysis.get_func_by_name(start_fn_name).unwrap_or_else(|| {
             panic!(
                 "Failed to find function named {:?} in the given module(s)",
@@ -157,7 +157,7 @@ impl<'m> TaintState<'m> {
         named_structs: HashMap<String, NamedStructInitialDef>,
     ) -> Self {
         let modules: Modules<'m> = modules.into_iter().collect();
-        let analysis = Analysis::new_multi_module(modules.iter());
+        let analysis = CrossModuleAnalysis::new(modules.iter());
         let mut initial_fn_taint_maps = nonargs;
         for (funcname, argtypes) in args.into_iter() {
             let (func, _) = analysis.get_func_by_name(&funcname).unwrap_or_else(|| {
@@ -180,7 +180,7 @@ impl<'m> TaintState<'m> {
 
     fn new(
         modules: Modules<'m>,
-        analysis: Analysis<'m>,
+        analysis: CrossModuleAnalysis<'m>,
         config: &'m Config,
         initial_worklist: Worklist<'m>,
         fn_taint_maps: HashMap<&'m str, HashMap<Name, TaintedType>>,
@@ -700,7 +700,7 @@ impl<'m> TaintState<'m> {
                     // I.e., we taint this phi's result if the current block is control-
                     // dependent on a block with tainted terminator, or if any of the incoming
                     // phi blocks are control-dependent on a block with tainted terminator.
-                    let cdg = self.analysis.control_dependence_graph(self.cur_fn);
+                    let cdg = self.analysis.module_analysis(&self.cur_mod.name).fn_analysis(self.cur_fn).control_dependence_graph();
                     let is_ctrl_dep_on_tainted_term = |block: &'m Name| {
                         cdg.get_control_dependencies(block)
                             .any(|dep| cur_fn.is_terminator_tainted(dep))
@@ -906,7 +906,7 @@ impl<'m> TaintState<'m> {
                 // This is because a tainted value (in some branch condition
                 // etc) influenced the value stored at this location.
                 let cur_fn = self.fn_taint_states.get_current();
-                let cdg = self.analysis.control_dependence_graph(self.cur_fn);
+                let cdg = self.analysis.module_analysis(&self.cur_mod.name).fn_analysis(self.cur_fn).control_dependence_graph();
                 let need_to_taint = cdg
                     .get_control_dependencies(&self.cur_block.unwrap())
                     .any(|dep| cur_fn.is_terminator_tainted(dep));

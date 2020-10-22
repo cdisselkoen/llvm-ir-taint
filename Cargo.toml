@@ -10,7 +10,7 @@ edition = "2018"
 either = "1.5.3"
 itertools = "0.9"
 llvm-ir = "0.7.3"
-llvm-ir-analysis = { git = "https://github.com/cdisselkoen/llvm-ir-analysis" }
+llvm-ir-analysis = "0.2.0"
 log = "0.4.11"
 
 [dev-dependencies]
