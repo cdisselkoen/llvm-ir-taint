@@ -673,7 +673,7 @@ fn load_and_store_mult() {
 #[test]
 fn array() {
     init_logging();
-    let funcname = "load_and_store_mult";
+    let funcname = "array";
     let module = get_memory_module();
     let modules = [module];
     let config = Config::default();
@@ -714,9 +714,9 @@ fn array() {
         Some(&TaintedType::TaintedValue)
     );
 
-    // with %5 tainted but %3 not. In this case we want to ensure that the
-    // (tainted) store to %0 doesn't affect the load from %4, which should
-    // remain untainted.
+    // with %3 tainted but %1 and %0 not. In this case we want to ensure that
+    // %4 gets tainted (and thus %6) but not %0 itself. This effectively shows
+    // we can taint one item of an array without tainting the whole array.
     let taint_result = do_taint_analysis_on_function(
         &modules,
         &config,
@@ -725,10 +725,14 @@ fn array() {
             TaintedType::untainted_ptr_to(TaintedType::UntaintedValue),
             TaintedType::UntaintedValue,
         ]),
-        std::iter::once((Name::from(5), TaintedType::TaintedValue)).collect(),
+        std::iter::once((Name::from(3), TaintedType::TaintedValue)).collect(),
         HashMap::new(),
     );
     let taintmap = taint_result.get_function_taint_map(funcname);
+    assert_eq!(
+        taintmap.get(&Name::from(4)),
+        Some(&TaintedType::untainted_ptr_to(TaintedType::TaintedValue))
+    );
     assert_eq!(
         taintmap.get(&Name::from(6)),
         Some(&TaintedType::TaintedValue)
