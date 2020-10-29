@@ -469,6 +469,31 @@ fn phi() {
 }
 
 #[test]
+fn tainted_control_flow() {
+    init_logging();
+    let funcname = "conditional_true";
+    let module = get_basic_module();
+    let modules = [module];
+    let config = Config::default();
+
+    // tainting _just_ %3 should still be sufficient to taint the return value
+    // (as it controls what is assigned via the phi)
+    let taint_result = do_taint_analysis_on_function(
+        &modules,
+        &config,
+        funcname,
+        Some(vec![TaintedType::UntaintedValue, TaintedType::UntaintedValue]),
+        std::iter::once((Name::from(3), TaintedType::TaintedValue)).collect(),
+        HashMap::new(),
+    );
+    let taintmap = taint_result.get_function_taint_map(funcname);
+    assert_eq!(
+        taintmap.get(&Name::from(13)),
+        Some(&TaintedType::TaintedValue)
+    );
+}
+
+#[test]
 fn load_and_store() {
     init_logging();
     let funcname = "load_and_store";
