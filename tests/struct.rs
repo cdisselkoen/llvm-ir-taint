@@ -42,7 +42,7 @@ fn one_struct_element() {
         &config,
         funcname,
         Some(vec![TaintedType::TaintedValue]),
-        std::iter::once((Name::from(8), TaintedType::TaintedValue)).collect(),
+        HashMap::new(),
         HashMap::new(),
     );
     let taintmap = taint_result.get_function_taint_map(funcname);
