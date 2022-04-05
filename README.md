@@ -31,7 +31,7 @@ functions it calls, including transitively), or
 module.
 ```rust
 let module = Module::from_bc_path(...)?;
-let taint_result = do_taint_analysis_on_function(&[module], ...)
+let taint_result = do_taint_analysis_on_function(&[module], ...);
 ```
 Either of these functions return a [`TaintResult`], from which you can get
 information about the result of an analysis, such as which variables are
