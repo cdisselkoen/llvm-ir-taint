@@ -12,7 +12,7 @@ so you can simply add it as a dependency in your `Cargo.toml`, selecting the
 feature corresponding to the LLVM version you want:
 ```toml
 [dependencies]
-llvm-ir-taint = { version = "0.1.0", features = ["llvm-13"] }
+llvm-ir-taint = { version = "0.1.1", features = ["llvm-13"] }
 ```
 Currently, the supported LLVM versions are `llvm-8`, `llvm-9`, `llvm-10`,
 `llvm-11`, `llvm-12`, and `llvm-13`.

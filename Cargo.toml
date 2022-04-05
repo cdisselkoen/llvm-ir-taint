@@ -1,6 +1,6 @@
 [package]
 name = "llvm-ir-taint"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Craig Disselkoen <craigdissel@gmail.com>"]
 edition = "2018"
 description = "Taint tracking for LLVM IR"
@@ -20,7 +20,7 @@ llvm-ir-analysis = "0.3.1"
 log = "0.4"
 
 [dev-dependencies]
-env_logger = "0.8"
+env_logger = "0.9"
 
 [features]
 # Select the LLVM version to be compatible with.
