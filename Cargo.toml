@@ -3,6 +3,12 @@ name = "llvm-ir-taint"
 version = "0.1.0"
 authors = ["Craig Disselkoen <craigdissel@gmail.com>"]
 edition = "2018"
+description = "Taint tracking for LLVM IR"
+documentation = "https://docs.rs/llvm-ir-taint"
+repository = "https://github.com/cdisselkoen/llvm-ir-taint"
+readme = "README.md"
+keywords = ["llvm", "analysis", "taint", "tracking"]
+license = "MIT"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
