@@ -42,6 +42,6 @@ For more details, see the [docs](https://docs.rs/llvm-ir-taint).
 [`llvm-ir`]: https://crates.io/crates/llvm-ir
 [`llvm-sys`]: https://crates.io/crates/llvm-sys
 [`Module`]: https://docs.rs/llvm-ir/0.8.1/llvm_ir/module/struct.Module.html
-[`do_taint_analysis_on_function()`]: https://docs.rs/llvm-ir-taint/0.1.0/llvm-ir-taint/fn.do_taint_analysis_on_function.html
-[`do_taint_analysis_on_module()`]: https://docs.rs/llvm-ir-taint/0.1.0/llvm-ir-taint/fn.do_taint_analysis_on_module.html
-[`TaintResult`]: https://docs.rs/llvm-ir-taint/0.1.0/llvm-ir-taint/struct.TaintResult.html
+[`do_taint_analysis_on_function()`]: https://docs.rs/llvm-ir-taint/latest/llvm_ir_taint/fn.do_taint_analysis_on_function.html
+[`do_taint_analysis_on_module()`]: https://docs.rs/llvm-ir-taint/latest/llvm_ir_taint/fn.do_taint_analysis_on_module.html
+[`TaintResult`]: https://docs.rs/llvm-ir-taint/latest/llvm_ir_taint/struct.TaintResult.html
